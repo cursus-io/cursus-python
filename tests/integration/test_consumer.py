@@ -14,8 +14,12 @@ def topic():
 def test_consumer_joins_group(broker_addr, topic):
     """Consumer can join a group on an existing topic."""
     pconfig = ProducerConfig(
-        brokers=[broker_addr], topic=topic, partitions=1,
-        acks=Acks.ONE, batch_size=1, linger_ms=0,
+        brokers=[broker_addr],
+        topic=topic,
+        partitions=1,
+        acks=Acks.ONE,
+        batch_size=1,
+        linger_ms=0,
     )
     with Producer(pconfig) as p:
         p.send("setup")

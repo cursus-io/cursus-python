@@ -8,7 +8,11 @@ class CommandBuilder:
 
     @staticmethod
     def consume(
-        topic: str, partition: int, offset: int, member: str, group: str = "",
+        topic: str,
+        partition: int,
+        offset: int,
+        member: str,
+        group: str = "",
         generation: int = -1,
     ) -> str:
         cmd = f"CONSUME topic={topic} partition={partition} offset={offset} member={member}"
@@ -20,7 +24,11 @@ class CommandBuilder:
 
     @staticmethod
     def stream(
-        topic: str, partition: int, group: str, member: str, generation: int,
+        topic: str,
+        partition: int,
+        group: str,
+        member: str,
+        generation: int,
         offset: int = 0,
     ) -> str:
         cmd = (

@@ -282,13 +282,21 @@ class Consumer:
                 group = self._config.group_id or "default-group"
                 if self._config.mode == ConsumerMode.STREAMING:
                     cmd = CommandBuilder.stream(
-                        self._config.topic, partition, group,
-                        self._member_id, self._generation, offset=offset,
+                        self._config.topic,
+                        partition,
+                        group,
+                        self._member_id,
+                        self._generation,
+                        offset=offset,
                     )
                 else:
                     cmd = CommandBuilder.consume(
-                        self._config.topic, partition, offset,
-                        self._member_id, group=group, generation=self._generation,
+                        self._config.topic,
+                        partition,
+                        offset,
+                        self._member_id,
+                        group=group,
+                        generation=self._generation,
                     )
 
                 conn = self._connect_to_partition_leader(partition)
