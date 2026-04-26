@@ -20,22 +20,22 @@ class _ByteReader:
         return result
 
     def read_uint8(self) -> int:
-        return struct.unpack(">B", self.read(1))[0]
+        return int(struct.unpack(">B", self.read(1))[0])
 
     def read_uint16(self) -> int:
-        return struct.unpack(">H", self.read(2))[0]
+        return int(struct.unpack(">H", self.read(2))[0])
 
     def read_int32(self) -> int:
-        return struct.unpack(">i", self.read(4))[0]
+        return int(struct.unpack(">i", self.read(4))[0])
 
     def read_uint32(self) -> int:
-        return struct.unpack(">I", self.read(4))[0]
+        return int(struct.unpack(">I", self.read(4))[0])
 
     def read_int64(self) -> int:
-        return struct.unpack(">q", self.read(8))[0]
+        return int(struct.unpack(">q", self.read(8))[0])
 
     def read_uint64(self) -> int:
-        return struct.unpack(">Q", self.read(8))[0]
+        return int(struct.unpack(">Q", self.read(8))[0])
 
     def read_bool(self) -> bool:
         return self.read_uint8() != 0
