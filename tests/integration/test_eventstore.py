@@ -2,7 +2,7 @@ import uuid
 
 import pytest
 
-from cursus import EventStore, Event
+from cursus import Event, EventStore
 from cursus.errors import ConnectionError
 
 

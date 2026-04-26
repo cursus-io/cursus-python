@@ -53,8 +53,8 @@ def test_send_with_key_deterministic(broker_addr, topic):
         linger_ms=0,
     )
     with Producer(config) as p:
-        seq1 = p.send("a", key="same-key")
-        seq2 = p.send("b", key="same-key")
+        p.send("a", key="same-key")
+        p.send("b", key="same-key")
         p.flush()
         assert p.unique_ack_count == 2
 
