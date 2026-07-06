@@ -3,7 +3,13 @@ import json
 import pytest
 
 from cursus.errors import ProtocolError
-from cursus.protocol.decoder import decode_ack, decode_batch
+from cursus.protocol.decoder import (
+    decode_ack,
+    decode_batch,
+    decode_offset_response,
+    decode_snapshot_response,
+    decode_version_response,
+)
 from cursus.protocol.encoder import encode_batch
 from cursus.types import Message
 
@@ -95,3 +101,29 @@ def test_decode_ack_error():
     ack = decode_ack(raw)
     assert ack.status == "ERROR"
     assert ack.error == "topic not found"
+
+
+def test_decode_offset_response_ok():
+    assert decode_offset_response("OK offset=42") == 42
+
+
+def test_decode_version_response_ok():
+    assert decode_version_response("OK version=7") == 7
+
+
+def test_decode_snapshot_response_ok():
+    assert decode_snapshot_response('OK snapshot={"version":1,"payload":"x"}') == (
+        '{"version":1,"payload":"x"}'
+    )
+    assert decode_snapshot_response("OK snapshot=null") is None
+
+
+def test_strict_response_decoders_reject_legacy_values():
+    with pytest.raises(ValueError, match="unexpected offset response"):
+        decode_offset_response("42")
+    with pytest.raises(ValueError, match="unexpected version response"):
+        decode_version_response("7")
+    with pytest.raises(ValueError, match="unexpected snapshot response"):
+        decode_snapshot_response("NULL")
+    with pytest.raises(ValueError, match="unexpected snapshot response"):
+        decode_snapshot_response('{"version":1,"payload":"x"}')

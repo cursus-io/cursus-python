@@ -93,6 +93,56 @@ def decode_batch(data: bytes) -> tuple[list[Message], str, int]:
     return messages, topic, partition
 
 
+def decode_ok_fields(response: str) -> dict[str, str]:
+    resp = response.strip()
+    if not resp.startswith("OK"):
+        return {}
+
+    fields: dict[str, str] = {}
+    for part in resp.split()[1:]:
+        key, sep, value = part.partition("=")
+        if sep:
+            fields[key] = value
+    return fields
+
+
+def decode_offset_response(response: str) -> int:
+    resp = response.strip()
+    if resp.startswith("ERROR:"):
+        raise ValueError(f"broker error: {resp}")
+
+    fields = decode_ok_fields(resp)
+    if not fields:
+        raise ValueError(f"unexpected offset response: {resp}")
+    if "offset" not in fields:
+        raise ValueError(f"missing offset in response: {resp}")
+    return int(fields["offset"])
+
+
+def decode_version_response(response: str) -> int:
+    resp = response.strip()
+    if resp.startswith("ERROR:"):
+        raise ValueError(f"broker error: {resp}")
+
+    fields = decode_ok_fields(resp)
+    if not fields:
+        raise ValueError(f"unexpected version response: {resp}")
+    if "version" not in fields:
+        raise ValueError(f"missing version in response: {resp}")
+    return int(fields["version"])
+
+
+def decode_snapshot_response(response: str) -> str | None:
+    resp = response.strip()
+    if resp.startswith("ERROR:"):
+        raise ValueError(f"broker error: {resp}")
+    if resp == "OK snapshot=null":
+        return None
+    if resp.startswith("OK snapshot="):
+        return resp.removeprefix("OK snapshot=")
+    raise ValueError(f"unexpected snapshot response: {resp}")
+
+
 def decode_ack(data: bytes) -> AckResponse:
     obj = json.loads(data)
     return AckResponse(
