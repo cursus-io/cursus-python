@@ -10,12 +10,15 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
       - uses: actions/checkout@v6
@@ -26,10 +29,25 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      - name: Install dependencies
+        run: uv sync --extra dev
+
       - name: Set version
         run: sed -i "s/version = \".*\"/version = \"${{ inputs.version }}\"/" pyproject.toml
 
-      - name: Build
+      - name: Lint
+        run: uv run ruff check src/ tests/
+
+      - name: Format check
+        run: uv run ruff format --check src/ tests/
+
+      - name: Type check
+        run: uv run mypy src/cursus/ --ignore-missing-imports
+
+      - name: Unit tests
+        run: uv run pytest tests/unit/ -v
+
+      - name: Build distributions
         run: uv build
 
       - name: Publish to PyPI
@@ -37,12 +55,12 @@ jobs:
         with:
           packages-dir: dist/
 
-      - name: Create Git Tag
+      - name: Create Git tag
         run: |
           git tag "v${{ inputs.version }}"
           git push origin "v${{ inputs.version }}"
 
-      - name: Create GitHub Release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ inputs.version }}
