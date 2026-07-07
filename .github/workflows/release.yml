@@ -70,21 +70,6 @@ jobs:
           generate_release_notes: true
           files: dist/*
           body: |
-            Cursus Python Client v${{ inputs.version }} is the Python SDK release for the Cursus message broker.
-
-            ## Highlights
-
-            - Producer support with partition batching, compression, and idempotent delivery.
-            - Consumer support for polling, streaming, consumer groups, offset commits, and rebalance handling.
-            - EventStore support for event sourcing with optimistic concurrency and snapshots.
-            - Sync and async APIs for producer, consumer, and event-store workflows.
-            - Strict protocol response parsing aligned with the normalized Cursus broker contract.
-
-            ## Requirements
-
-            - Python 3.10 or later.
-            - A running Cursus broker, usually on `localhost:9000` for local development.
-
             ## Install
 
             ```bash
@@ -98,28 +83,18 @@ jobs:
             pip install "cursus-client[lz4]==${{ inputs.version }}"
             ```
 
-            ## Quick Start
+            ## Import
 
             ```python
-            from cursus import Producer, ProducerConfig, Acks
-
-            config = ProducerConfig(
-                brokers=["localhost:9000"],
-                topic="my-topic",
-                partitions=4,
-                acks=Acks.ONE,
-            )
-
-            with Producer(config) as producer:
-                producer.send("Hello, Cursus!")
-                producer.flush()
+            from cursus import Producer, Consumer, EventStore
             ```
 
-            ## Package Links
+            ## Compatibility
+
+            - Python 3.10 or later.
+            - Requires a running Cursus broker.
+
+            ## Links
 
             - PyPI: https://pypi.org/project/cursus-client/${{ inputs.version }}/
-            - GitHub: https://github.com/cursus-io/cursus-python
-
-            ## Assets
-
-            The release assets include the Python wheel and source distribution published to PyPI.
+            - Documentation: https://github.com/cursus-io/cursus-python#readme
