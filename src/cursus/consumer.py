@@ -8,7 +8,7 @@ from cursus.config import ConsumerConfig
 from cursus.connection.sync_conn import SyncConnection
 from cursus.errors import ConnectionError
 from cursus.protocol.command import CommandBuilder
-from cursus.protocol.decoder import decode_batch
+from cursus.protocol.decoder import decode_batch, decode_offset_response
 from cursus.protocol.encoder import encode_message
 from cursus.types import ConsumerMode, Message
 
@@ -201,9 +201,9 @@ class Consumer:
                     self._config.topic, pid, self._config.group_id or "default-group"
                 )
                 resp = self._send_coordinator_command(fetch_cmd)
-                self._offsets[pid] = int(resp.strip())
-            except (ValueError, ConnectionError):
-                self._offsets[pid] = 0
+                self._offsets[pid] = decode_offset_response(resp)
+            except ValueError as exc:
+                raise ConnectionError(f"fetch offset failed: {resp}") from exc
 
         try:
             self._fetch_metadata()

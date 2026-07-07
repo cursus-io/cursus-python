@@ -9,7 +9,7 @@ from cursus.config import ConsumerConfig
 from cursus.connection.async_conn import AsyncConnection
 from cursus.errors import ConnectionError
 from cursus.protocol.command import CommandBuilder
-from cursus.protocol.decoder import decode_batch
+from cursus.protocol.decoder import decode_batch, decode_offset_response
 from cursus.protocol.encoder import encode_message
 from cursus.types import ConsumerMode, Message
 
@@ -87,9 +87,9 @@ class AsyncConsumer:
             try:
                 fetch_cmd = CommandBuilder.fetch_offset(self._config.topic, pid, group)
                 resp = await self._send_command(fetch_cmd)
-                self._offsets[pid] = int(resp.strip())
-            except (ValueError, ConnectionError):
-                self._offsets[pid] = 0
+                self._offsets[pid] = decode_offset_response(resp)
+            except ValueError as exc:
+                raise ConnectionError(f"fetch offset failed: {resp}") from exc
 
     async def start(self) -> None:
         await self._join_and_sync()

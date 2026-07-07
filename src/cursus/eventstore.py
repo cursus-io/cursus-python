@@ -5,7 +5,7 @@ from typing_extensions import Self
 from cursus.connection.sync_conn import SyncConnection
 from cursus.errors import ConnectionError
 from cursus.protocol.command import CommandBuilder
-from cursus.protocol.decoder import decode_batch
+from cursus.protocol.decoder import decode_batch, decode_snapshot_response, decode_version_response
 from cursus.protocol.encoder import encode_message
 from cursus.types import AppendResult, Event, Snapshot, StreamData, StreamEvent
 
@@ -43,8 +43,10 @@ class EventStore:
     def create_topic(self, partitions: int) -> None:
         cmd = CommandBuilder.create(self._topic, partitions, event_sourcing=True)
         resp = self._send_command(cmd)
-        if resp.startswith("ERROR"):
+        if resp.startswith("ERROR:"):
             raise ConnectionError(f"broker: {resp}")
+        if not resp.startswith("OK"):
+            raise ConnectionError(f"unexpected create response: {resp}")
 
     def append(self, key: str, expected_version: int, event: Event) -> AppendResult:
         cmd = CommandBuilder.append_stream(
@@ -58,26 +60,31 @@ class EventStore:
             metadata=event.metadata,
         )
         resp = self._send_command(cmd)
-        if resp.startswith("ERROR"):
+        if resp.startswith("ERROR:"):
             raise ConnectionError(f"broker: {resp}")
-        return self._parse_append_response(resp)
+        if not resp.startswith("OK"):
+            raise ConnectionError(f"unexpected append response: {resp}")
+        try:
+            return self._parse_append_response(resp)
+        except ValueError as exc:
+            raise ConnectionError(f"broker: {resp}") from exc
 
     def _parse_append_response(self, resp: str) -> AppendResult:
-        version = 0
-        offset = 0
-        partition = 0
-        for part in resp.split():
-            kv = part.split("=", 1)
-            if len(kv) != 2:
-                continue
-            match kv[0]:
-                case "version":
-                    version = int(kv[1])
-                case "offset":
-                    offset = int(kv[1])
-                case "partition":
-                    partition = int(kv[1])
-        return AppendResult(version=version, offset=offset, partition=partition)
+        if not resp.startswith("OK"):
+            raise ValueError(f"unexpected append response: {resp}")
+        fields: dict[str, str] = {}
+        for part in resp.split()[1:]:
+            key, sep, value = part.partition("=")
+            if sep:
+                fields[key] = value
+        missing = {"version", "offset", "partition"} - fields.keys()
+        if missing:
+            raise ValueError(f"missing append fields in response: {resp}")
+        return AppendResult(
+            version=int(fields["version"]),
+            offset=int(fields["offset"]),
+            partition=int(fields["partition"]),
+        )
 
     def read_stream(self, key: str, from_version: int = 0) -> StreamData:
         cmd = CommandBuilder.read_stream(self._topic, key, from_version=from_version)
@@ -86,6 +93,11 @@ class EventStore:
             conn.write_frame(encode_message("", cmd))
             env_data = conn.read_frame()
             envelope = json.loads(env_data)
+            status = envelope.get("status")
+            if status == "ERROR":
+                raise ConnectionError(f"broker: {envelope.get('error', 'read stream failed')}")
+            if status != "OK":
+                raise ConnectionError(f"unexpected read stream status: {status}")
 
             snapshot: Snapshot | None = None
             if envelope.get("snapshot"):
@@ -116,23 +128,30 @@ class EventStore:
     def save_snapshot(self, key: str, version: int, payload: str) -> None:
         cmd = CommandBuilder.save_snapshot(self._topic, key, version, payload)
         resp = self._send_command(cmd)
-        if resp.startswith("ERROR"):
+        if resp.startswith("ERROR:"):
             raise ConnectionError(f"broker: {resp}")
+        if not resp.startswith("OK"):
+            raise ConnectionError(f"unexpected save snapshot response: {resp}")
 
     def read_snapshot(self, key: str) -> Snapshot | None:
         cmd = CommandBuilder.read_snapshot(self._topic, key)
         resp = self._send_command(cmd)
-        if resp == "NULL" or "NOT_FOUND" in resp:
+        try:
+            snapshot_data = decode_snapshot_response(resp)
+        except ValueError as exc:
+            raise ConnectionError(f"broker: {resp}") from exc
+        if snapshot_data is None:
             return None
-        if resp.startswith("ERROR"):
-            raise ConnectionError(f"broker: {resp}")
-        obj = json.loads(resp)
+        obj = json.loads(snapshot_data)
         return Snapshot(version=obj["version"], payload=obj["payload"])
 
     def stream_version(self, key: str) -> int:
         cmd = CommandBuilder.stream_version(self._topic, key)
         resp = self._send_command(cmd)
-        return int(resp.strip())
+        try:
+            return decode_version_response(resp)
+        except ValueError as exc:
+            raise ConnectionError(f"broker: {resp}") from exc
 
     def close(self) -> None:
         self._reset_conn()
