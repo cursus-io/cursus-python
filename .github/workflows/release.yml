@@ -15,7 +15,9 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    environment: pypi
+    environment:
+      name: pypi
+      url: https://pypi.org/project/cursus-client/${{ inputs.version }}/
     permissions:
       contents: write
       id-token: write
@@ -66,3 +68,20 @@ jobs:
           tag_name: v${{ inputs.version }}
           name: v${{ inputs.version }}
           generate_release_notes: true
+          files: dist/*
+          body: |
+            ## Install
+
+            ```bash
+            pip install cursus-client==${{ inputs.version }}
+            ```
+
+            ## Import
+
+            ```python
+            from cursus import Producer, Consumer, EventStore
+            ```
+
+            ## Package
+
+            - PyPI: https://pypi.org/project/cursus-client/${{ inputs.version }}/
