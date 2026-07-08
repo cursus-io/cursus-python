@@ -155,13 +155,13 @@ class Producer:
 
                 n = min(len(buf.msgs), self._config.batch_size)
                 batch = buf.msgs[:n]
-                buf.msgs = buf.msgs[n:]
+                if batch:
+                    with self._in_flight_lock:
+                        self._in_flight[part] += 1
+                    buf.msgs = buf.msgs[n:]
 
             if not batch:
                 continue
-
-            with self._in_flight_lock:
-                self._in_flight[part] += 1
 
             sent = False
             backoff_ms = 100
