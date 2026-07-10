@@ -1,4 +1,5 @@
 import json
+import time
 
 from typing_extensions import Self
 
@@ -11,8 +12,11 @@ from cursus.types import AppendResult, Event, Snapshot, StreamData, StreamEvent
 
 
 class EventStore:
-    def __init__(self, addr: str, topic: str, producer_id: str) -> None:
-        self._addr = addr
+    def __init__(self, addr: str | list[str], topic: str, producer_id: str) -> None:
+        self._addrs = [addr] if isinstance(addr, str) else list(addr)
+        if not self._addrs:
+            raise ValueError("at least one broker address is required")
+        self._addr = self._addrs[0]
         self._topic = topic
         self._producer_id = producer_id
         self._conn: SyncConnection | None = None
@@ -30,7 +34,27 @@ class EventStore:
             self._conn.close()
             self._conn = None
 
-    def _send_command(self, cmd: str) -> str:
+    def _switch_addr(self, addr: str) -> None:
+        if addr != self._addr:
+            self._addr = addr
+        self._reset_conn()
+
+    @staticmethod
+    def _leader_from_error(resp: str) -> str | None:
+        marker = "NOT_LEADER LEADER_IS"
+        if marker not in resp:
+            return None
+        parts = resp.split(marker, 1)[1].strip().split()
+        return parts[0] if parts else None
+
+    @staticmethod
+    def _is_retryable_topic_error(resp: str) -> bool:
+        text = resp.lower()
+        return (
+            "topic_not_found" in text or "no_raft_leader" in text or "leader_not_available" in text
+        )
+
+    def _send_command_once(self, cmd: str) -> str:
         conn = self._get_conn()
         try:
             conn.write_frame(encode_message("", cmd))
@@ -40,9 +64,30 @@ class EventStore:
             self._reset_conn()
             raise
 
+    def _send_command(self, cmd: str, *, retries: int = 5, retry_topic_errors: bool = False) -> str:
+        last_resp = ""
+        for attempt in range(retries + 1):
+            resp = self._send_command_once(cmd)
+            last_resp = resp
+            leader = self._leader_from_error(resp)
+            if leader is not None and attempt < retries:
+                self._switch_addr(leader)
+                continue
+            if (
+                retry_topic_errors
+                and resp.startswith("ERROR:")
+                and self._is_retryable_topic_error(resp)
+                and attempt < retries
+            ):
+                self._reset_conn()
+                time.sleep(min(0.05 * (attempt + 1), 0.5))
+                continue
+            return resp
+        return last_resp
+
     def create_topic(self, partitions: int) -> None:
         cmd = CommandBuilder.create(self._topic, partitions, event_sourcing=True)
-        resp = self._send_command(cmd)
+        resp = self._send_command(cmd, retries=5, retry_topic_errors=True)
         if resp.startswith("ERROR:"):
             raise ConnectionError(f"broker: {resp}")
         if not resp.startswith("OK"):
@@ -59,7 +104,7 @@ class EventStore:
             payload=event.payload,
             metadata=event.metadata,
         )
-        resp = self._send_command(cmd)
+        resp = self._send_command(cmd, retries=6, retry_topic_errors=True)
         if resp.startswith("ERROR:"):
             raise ConnectionError(f"broker: {resp}")
         if not resp.startswith("OK"):
@@ -88,11 +133,35 @@ class EventStore:
 
     def read_stream(self, key: str, from_version: int = 0) -> StreamData:
         cmd = CommandBuilder.read_stream(self._topic, key, from_version=from_version)
+        last_error = ""
+        for attempt in range(7):
+            try:
+                return self._read_stream_once(cmd)
+            except ConnectionError as exc:
+                message = str(exc)
+                last_error = message
+                leader = self._leader_from_error(message)
+                if leader is not None and attempt < 6:
+                    self._switch_addr(leader)
+                    continue
+                if self._is_retryable_topic_error(message) and attempt < 6:
+                    self._reset_conn()
+                    time.sleep(min(0.05 * (attempt + 1), 0.5))
+                    continue
+                raise
+        raise ConnectionError(last_error or "read stream failed")
+
+    def _read_stream_once(self, cmd: str) -> StreamData:
         conn = self._get_conn()
         try:
             conn.write_frame(encode_message("", cmd))
             env_data = conn.read_frame()
-            envelope = json.loads(env_data)
+            try:
+                envelope = json.loads(env_data)
+            except json.JSONDecodeError as exc:
+                text = env_data.decode(errors="replace")
+                raise ConnectionError(f"broker: {text}") from exc
+
             status = envelope.get("status")
             if status == "ERROR":
                 raise ConnectionError(f"broker: {envelope.get('error', 'read stream failed')}")
@@ -127,7 +196,7 @@ class EventStore:
 
     def save_snapshot(self, key: str, version: int, payload: str) -> None:
         cmd = CommandBuilder.save_snapshot(self._topic, key, version, payload)
-        resp = self._send_command(cmd)
+        resp = self._send_command(cmd, retries=6, retry_topic_errors=True)
         if resp.startswith("ERROR:"):
             raise ConnectionError(f"broker: {resp}")
         if not resp.startswith("OK"):
@@ -135,7 +204,7 @@ class EventStore:
 
     def read_snapshot(self, key: str) -> Snapshot | None:
         cmd = CommandBuilder.read_snapshot(self._topic, key)
-        resp = self._send_command(cmd)
+        resp = self._send_command(cmd, retries=6, retry_topic_errors=True)
         try:
             snapshot_data = decode_snapshot_response(resp)
         except ValueError as exc:
@@ -147,7 +216,7 @@ class EventStore:
 
     def stream_version(self, key: str) -> int:
         cmd = CommandBuilder.stream_version(self._topic, key)
-        resp = self._send_command(cmd)
+        resp = self._send_command(cmd, retries=6, retry_topic_errors=True)
         try:
             return decode_version_response(resp)
         except ValueError as exc:
