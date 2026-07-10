@@ -9,6 +9,9 @@ description = "Python client for the Cursus message broker"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
+dependencies = [
+    "typing-extensions>=4.0",
+]
 authors = [
     { name = "Cursus Contributors", email = "dev@cursus.io" },
 ]
