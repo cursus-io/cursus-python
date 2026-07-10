@@ -22,6 +22,12 @@ Python client library for the [Cursus](https://github.com/cursus-io/cursus) mess
 pip install cursus-client
 ```
 
+Verify the installed package:
+
+```bash
+python -c "from cursus import Producer, Consumer, EventStore; print('ok')"
+```
+
 ### Send a message
 
 ```python
@@ -57,6 +63,35 @@ with Consumer(config) as consumer:
         print(f"offset={msg.offset} payload={msg.payload}")
 ```
 
+### Event sourcing
+
+```python
+from cursus import EventStore, Event
+
+store = EventStore(addr="localhost:9000", topic="orders-es", producer_id="orders")
+store.create_topic(partitions=4)
+
+result = store.append(
+    key="order-1001",
+    expected_version=1,
+    event=Event(type="OrderCreated", payload='{"item": "widget"}'),
+)
+print(result.version)
+
+stream = store.read_stream("order-1001")
+print([event.type for event in stream.events])
+store.close()
+```
+
+For a cluster, pass bootstrap broker addresses to the clients:
+
+```python
+brokers = ["localhost:9001", "localhost:9002", "localhost:9003"]
+
+producer_config = ProducerConfig(brokers=brokers, topic="my-topic")
+events = EventStore(addr=brokers, topic="orders-es", producer_id="orders")
+```
+
 ### Async
 
 ```python
@@ -73,6 +108,13 @@ async with AsyncProducer(ProducerConfig(topic="my-topic")) as p:
 pip install cursus-client[snappy]    # Snappy compression
 pip install cursus-client[lz4]       # LZ4 compression
 ```
+
+## More Examples
+
+- [Getting Started](docs/getting-started.md)
+- [Producer Guide](docs/producer-guide.md)
+- [Consumer Guide](docs/consumer-guide.md)
+- [Standalone examples](examples/standalone/README.md)
 
 ## License
 
