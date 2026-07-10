@@ -23,6 +23,12 @@ flowchart LR
 pip install cursus-client
 ```
 
+Verify imports from the installed package:
+
+```bash
+python -c "from cursus import Producer, Consumer, EventStore; print('ok')"
+```
+
 Optional compression support:
 
 ```bash
@@ -73,6 +79,36 @@ config = ConsumerConfig(
 with Consumer(config) as consumer:
     for msg in consumer:
         print(f"offset={msg.offset}  payload={msg.payload}")
+```
+
+## Event sourcing
+
+```python
+from cursus import EventStore, Event
+
+store = EventStore(addr="localhost:9000", topic="orders-es", producer_id="orders")
+store.create_topic(partitions=4)
+
+store.append(
+    key="order-1001",
+    expected_version=1,
+    event=Event(type="OrderCreated", payload='{"item": "widget"}'),
+)
+
+stream = store.read_stream("order-1001")
+print(stream.events[0].type)
+store.close()
+```
+
+## Cluster brokers
+
+Pass all bootstrap broker addresses. The client follows broker redirects when a partition leader is elsewhere.
+
+```python
+brokers = ["localhost:9001", "localhost:9002", "localhost:9003"]
+
+producer_config = ProducerConfig(brokers=brokers, topic="hello-topic")
+events = EventStore(addr=brokers, topic="orders-es", producer_id="orders")
 ```
 
 ## Next steps
