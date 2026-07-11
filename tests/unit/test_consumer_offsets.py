@@ -418,7 +418,7 @@ def test_async_streaming_keeps_connection_for_multiple_frames():
     asyncio.run(scenario())
 
 
-def test_sync_plain_control_frames_are_handled_before_decompress():
+def test_sync_compressed_consumer_handles_plain_control_frames_before_decompress():
     consumer = Consumer(
         ConsumerConfig(
             topic="orders",
@@ -436,13 +436,22 @@ def test_sync_plain_control_frames_are_handled_before_decompress():
     )
     assert consumer._offsets[0] == 20
 
+    assert consumer._handle_partition_frame(0, consumer._assignment_epoch, b"")
+
+    assert not consumer._handle_partition_frame(
+        0,
+        consumer._assignment_epoch,
+        b"STREAM_CONTROL type=CLOSE reason=offset_out_of_range earliest=30 latest=40",
+    )
+    assert consumer._offsets[0] == 40
+
     assert not consumer._handle_partition_frame(
         0, consumer._assignment_epoch, b"ERROR: GEN_MISMATCH expected=2 actual=1"
     )
     assert consumer._rejoin_required.is_set()
 
 
-def test_async_plain_control_frames_are_handled_before_decompress():
+def test_async_compressed_consumer_handles_plain_control_frames_before_decompress():
     import asyncio
 
     from cursus.async_consumer import AsyncConsumer
@@ -462,10 +471,17 @@ def test_async_plain_control_frames_are_handled_before_decompress():
         )
         assert consumer._offsets[0] == 20
 
+        assert await consumer._handle_partition_frame(0, b"")
+
         assert not await consumer._handle_partition_frame(
             0, b"STREAM_CONTROL type=CLOSE reason=offset_out_of_range earliest=30 latest=40"
         )
         assert consumer._offsets[0] == 40
+
+        assert not await consumer._handle_partition_frame(
+            0, b"ERROR: member_not_found member=member-1"
+        )
+        assert consumer._rejoin_event.is_set()
         await consumer.close()
 
     asyncio.run(scenario())
