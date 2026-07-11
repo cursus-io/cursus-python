@@ -7,7 +7,7 @@ from typing_extensions import Self
 from cursus.compression.registry import CompressionRegistry
 from cursus.config import ProducerConfig
 from cursus.connection.async_conn import AsyncConnection
-from cursus.errors import ProducerClosedError
+from cursus.errors import ConnectionError, ProducerClosedError, ProducerFencedError
 from cursus.protocol.command import CommandBuilder
 from cursus.protocol.decoder import decode_ack, is_terminal_producer_error
 from cursus.protocol.encoder import encode_batch, encode_message
@@ -26,6 +26,8 @@ class AsyncProducer:
         self._tasks: list[asyncio.Task[None]] = []
         self._partition_leaders: dict[int, str] = {}
         self._events: list[asyncio.Event] = [asyncio.Event() for _ in range(config.partitions)]
+        self._producer_id = f"py-async-{id(self):x}"
+        self._producer_epoch = int(time.time())
         self._stop_event = asyncio.Event()
 
     async def start(self) -> None:
@@ -111,8 +113,8 @@ class AsyncProducer:
             seq_num=seq,
             payload=payload,
             key=key,
-            producer_id=f"py-async-{id(self):x}",
-            epoch=int(time.time()),
+            producer_id=self._producer_id,
+            epoch=self._producer_epoch,
         )
         self._buffers[part].append(msg)
         self._events[part].set()
@@ -141,6 +143,9 @@ class AsyncProducer:
                     conn = await self._connect_partition(part)
                 except Exception:
                     conn = None
+                    self._buffers[part] = batch + self._buffers[part]
+                    self._events[part].set()
+                    await asyncio.sleep(min(self._config.max_backoff_ms / 1000.0, 0.1))
                     continue
 
             try:
@@ -171,11 +176,23 @@ class AsyncProducer:
                 elif ack.error and is_terminal_producer_error(ack.error):
                     self._closed = True
                     self._stop_event.set()
-                    continue
+                    raise ProducerFencedError(ack.error)
+                else:
+                    error = ack.error or f"broker returned status={ack.status}"
+                    raise ConnectionError(f"broker rejected batch for partition {part}: {error}")
+            except ProducerFencedError:
+                if conn is not None:
+                    await conn.close()
+                    conn = None
+                continue
             except Exception:
                 if conn is not None:
                     await conn.close()
                     conn = None
+                if batch:
+                    self._buffers[part] = batch + self._buffers[part]
+                    self._events[part].set()
+                    await asyncio.sleep(min(self._config.max_backoff_ms / 1000.0, 0.1))
 
         if conn is not None:
             await conn.close()
