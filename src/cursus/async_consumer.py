@@ -158,6 +158,7 @@ class AsyncConsumer:
         self._rejoin_event.set()
 
     async def _rejoin_loop(self) -> None:
+        backoff_s = 1.0
         while not self._stop_event.is_set():
             await self._rejoin_event.wait()
             if self._stop_event.is_set():
@@ -169,9 +170,11 @@ class AsyncConsumer:
             try:
                 await self._join_and_sync()
             except Exception:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(backoff_s)
+                backoff_s = min(backoff_s * 2, self._config.max_backoff_ms / 1000.0)
                 self._rejoin_event.set()
                 continue
+            backoff_s = 1.0
             self._start_partition_tasks()
 
     async def _poll_loop(self, partition: int) -> None:
@@ -225,6 +228,8 @@ class AsyncConsumer:
                         continue
                     if len(resp_data) > 2:
                         messages, _, _ = decode_batch(resp_data)
+                        if self._rejoin_event.is_set() or self._stop_event.is_set():
+                            return
                         for msg in messages:
                             await self._queue.put(msg)
                         if messages:

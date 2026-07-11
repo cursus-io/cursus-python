@@ -197,3 +197,50 @@ def test_async_commit_loop_is_singleton():
         await consumer.close()
 
     asyncio.run(scenario())
+
+
+def test_restart_assignment_runs_outside_queue_lock():
+    consumer = make_consumer()
+    consumer._rejoin_required.set()
+    consumer._done.set()
+    consumer._start_background_loops = lambda: None  # type: ignore[method-assign]
+
+    def restart() -> None:
+        assert not consumer._queue_lock._is_owned()  # type: ignore[attr-defined]
+        consumer._rejoin_required.clear()
+
+    consumer._restart_assignment = restart  # type: ignore[method-assign]
+    consumer.start(lambda _msg: None)
+
+
+def test_partition_workers_are_not_added_to_background_workers():
+    consumer = make_consumer()
+    consumer._assignments = [0, 1]
+    consumer._assignment_epoch = 1
+
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self) -> None:
+            started.append(self.args)
+
+        def join(self, timeout=None) -> None:
+            pass
+
+    import threading
+
+    original_thread = threading.Thread
+    threading.Thread = FakeThread  # type: ignore[assignment]
+    try:
+        consumer._start_partition_workers()
+    finally:
+        threading.Thread = original_thread  # type: ignore[assignment]
+
+    assert started == [(0, 1), (1, 1)]
+    assert len(consumer._partition_workers) == 2
+    assert consumer._workers == []

@@ -141,6 +141,8 @@ async with AsyncConsumer(config) as consumer:
 
 For at-least-once processing, process the message first and commit `lastProcessedOffset + 1` only after the handler succeeds. Committing before processing is possible for at-most-once workflows, but a crash after the commit can skip unprocessed records. Cursus does not yet provide Kafka transaction-level exactly-once semantics.
 
+In iterator style, the SDK marks a yielded message as processed when the loop advances to the next item. If the application breaks immediately after handling a message, `close()` marks the last delivered message before flushing dirty offsets.
+
 If the broker returns `ERROR: offset_regression ...`, the SDK treats the commit as failed and does not advance or rewind local committed state. Coordinator failures such as `GEN_MISMATCH`, `NOT_OWNER`, `member_not_found`, `group_not_found`, and `NOT_COORDINATOR` trigger rediscovery/rejoin behavior.
 
 Streaming consumers recognize UTF-8 `STREAM_CONTROL` frames before binary batch decoding. `STREAM_CONTROL type=CLOSE reason=offset_out_of_range ...` applies the same `auto_offset_reset` policy as pull `ERROR: OFFSET_OUT_OF_RANGE ...`; zero-length stream frames are keepalives.

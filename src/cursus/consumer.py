@@ -57,6 +57,7 @@ class Consumer:
         self._restart_assignment()
 
         while not self._done.is_set():
+            restart_required = False
             with self._queue_cond:
                 while (
                     len(self._message_queue) == 0
@@ -65,12 +66,17 @@ class Consumer:
                 ):
                     self._queue_cond.wait(timeout=1.0)
                 if self._rejoin_required.is_set():
-                    self._restart_assignment()
-                    continue
-                if self._done.is_set() and len(self._message_queue) == 0:
+                    restart_required = True
+                    msgs = []
+                elif self._done.is_set() and len(self._message_queue) == 0:
                     break
-                msgs = list(self._message_queue)
-                self._message_queue.clear()
+                else:
+                    msgs = list(self._message_queue)
+                    self._message_queue.clear()
+
+            if restart_required:
+                self._restart_assignment()
+                continue
 
             for msg in msgs:
                 if self._done.is_set() or self._rejoin_required.is_set():
@@ -83,6 +89,7 @@ class Consumer:
         self._restart_assignment()
 
         while not self._done.is_set():
+            restart_required = False
             with self._queue_cond:
                 while (
                     len(self._message_queue) == 0
@@ -91,12 +98,17 @@ class Consumer:
                 ):
                     self._queue_cond.wait(timeout=1.0)
                 if self._rejoin_required.is_set():
-                    self._restart_assignment()
-                    continue
-                if self._done.is_set() and len(self._message_queue) == 0:
+                    restart_required = True
+                    msgs = []
+                elif self._done.is_set() and len(self._message_queue) == 0:
                     return
-                msgs = list(self._message_queue)
-                self._message_queue.clear()
+                else:
+                    msgs = list(self._message_queue)
+                    self._message_queue.clear()
+
+            if restart_required:
+                self._restart_assignment()
+                continue
 
             for msg in msgs:
                 if self._done.is_set() or self._rejoin_required.is_set():
@@ -336,7 +348,6 @@ class Consumer:
             t = threading.Thread(target=self._partition_poll_loop, args=(pid, epoch), daemon=True)
             t.start()
             self._partition_workers.append(t)
-            self._workers.append(t)
 
     def _stop_partition_workers(self) -> None:
         for t in self._partition_workers:
@@ -418,7 +429,11 @@ class Consumer:
                             continue
 
                         messages, _, _ = decode_batch(resp_data)
-                        if messages:
+                        if (
+                            messages
+                            and not self._rejoin_required.is_set()
+                            and epoch == self._assignment_epoch
+                        ):
                             with self._queue_cond:
                                 self._message_queue.extend(messages)
                                 self._queue_cond.notify()
@@ -556,6 +571,7 @@ class Consumer:
             except Exception:
                 pass
 
+        self._stop_partition_workers()
         for t in self._workers:
             t.join(timeout=5.0)
 
