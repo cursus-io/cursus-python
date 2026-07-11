@@ -416,3 +416,56 @@ def test_async_streaming_keeps_connection_for_multiple_frames():
         await consumer.close()
 
     asyncio.run(scenario())
+
+
+def test_sync_plain_control_frames_are_handled_before_decompress():
+    consumer = Consumer(
+        ConsumerConfig(
+            topic="orders",
+            group_id="workers",
+            compression_type="gzip",
+            auto_offset_reset=AutoOffsetReset.LATEST,
+        )
+    )
+    consumer._assignment_epoch = 1
+
+    assert not consumer._handle_partition_frame(
+        0,
+        consumer._assignment_epoch,
+        b"ERROR: OFFSET_OUT_OF_RANGE requested=3 earliest=10 latest=20",
+    )
+    assert consumer._offsets[0] == 20
+
+    assert not consumer._handle_partition_frame(
+        0, consumer._assignment_epoch, b"ERROR: GEN_MISMATCH expected=2 actual=1"
+    )
+    assert consumer._rejoin_required.is_set()
+
+
+def test_async_plain_control_frames_are_handled_before_decompress():
+    import asyncio
+
+    from cursus.async_consumer import AsyncConsumer
+
+    async def scenario() -> None:
+        consumer = AsyncConsumer(
+            ConsumerConfig(
+                topic="orders",
+                group_id="workers",
+                compression_type="gzip",
+                auto_offset_reset=AutoOffsetReset.LATEST,
+            )
+        )
+
+        assert not await consumer._handle_partition_frame(
+            0, b"ERROR: OFFSET_OUT_OF_RANGE requested=3 earliest=10 latest=20"
+        )
+        assert consumer._offsets[0] == 20
+
+        assert not await consumer._handle_partition_frame(
+            0, b"STREAM_CONTROL type=CLOSE reason=offset_out_of_range earliest=30 latest=40"
+        )
+        assert consumer._offsets[0] == 40
+        await consumer.close()
+
+    asyncio.run(scenario())

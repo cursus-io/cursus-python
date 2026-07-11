@@ -381,34 +381,40 @@ class Consumer:
                 break
         return True
 
-    def _handle_partition_frame(self, partition: int, epoch: int, frame: bytes) -> bool:
-        resp_text = frame.decode("utf-8", errors="replace")
-        if self._record_leader_redirect(partition, resp_text):
-            return False
-
-        data = self._compression.decompress(frame, self._config.compression_type)
-        if len(data) == 0:
+    def _handle_text_frame(self, partition: int, frame: bytes) -> bool | None:
+        if len(frame) == 0:
             return True
-
-        if is_stream_control_frame(data):
-            control = decode_stream_control(data)
+        if is_stream_control_frame(frame):
+            control = decode_stream_control(frame)
             self._handle_stream_control(partition, control)
             return control.type != "CLOSE"
-
         try:
-            resp_str = data.decode()
-            if self._record_leader_redirect(partition, resp_str):
-                return False
-            if is_coordinator_failure(resp_str):
-                self._request_rejoin()
-                return False
-            if is_offset_out_of_range(resp_str):
-                self._offsets[partition] = self._resolve_offset_reset(
-                    decode_offset_out_of_range(resp_str)
-                )
-                return False
+            response = frame.decode()
         except UnicodeDecodeError:
-            pass
+            return None
+        if self._record_leader_redirect(partition, response):
+            return False
+        if is_coordinator_failure(response):
+            self._request_rejoin()
+            return False
+        if is_offset_out_of_range(response):
+            self._offsets[partition] = self._resolve_offset_reset(
+                decode_offset_out_of_range(response)
+            )
+            return False
+        if response.startswith("ERROR:"):
+            return False
+        return None
+
+    def _handle_partition_frame(self, partition: int, epoch: int, frame: bytes) -> bool:
+        text_result = self._handle_text_frame(partition, frame)
+        if text_result is not None:
+            return text_result
+
+        data = self._compression.decompress(frame, self._config.compression_type)
+        text_result = self._handle_text_frame(partition, data)
+        if text_result is not None:
+            return text_result
 
         if len(data) > 2:
             messages, _, _ = decode_batch(data)
