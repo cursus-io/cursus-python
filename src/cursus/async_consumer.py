@@ -33,6 +33,7 @@ class AsyncConsumer:
         self._tasks: list[asyncio.Task[None]] = []
         self._partition_tasks: list[asyncio.Task[None]] = []
         self._commit_task: asyncio.Task[None] | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._rejoin_task: asyncio.Task[None] | None = None
         self._rejoin_event = asyncio.Event()
         self._generation = 0
@@ -149,6 +150,7 @@ class AsyncConsumer:
 
     async def start(self) -> None:
         await self._join_and_sync()
+        self._ensure_heartbeat_loop()
         self._ensure_commit_loop()
         self._start_partition_tasks()
         if self._rejoin_task is None or self._rejoin_task.done():
@@ -159,6 +161,11 @@ class AsyncConsumer:
         if self._commit_task is None or self._commit_task.done():
             self._commit_task = asyncio.create_task(self._commit_loop())
             self._tasks.append(self._commit_task)
+
+    def _ensure_heartbeat_loop(self) -> None:
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            self._tasks.append(self._heartbeat_task)
 
     def _start_partition_tasks(self) -> None:
         for pid in self._assignments:
@@ -333,6 +340,35 @@ class AsyncConsumer:
         self._dirty_count += 1
         if self._dirty_count >= self._config.commit_batch_size:
             await self._commit_dirty_offsets()
+
+    async def _heartbeat_loop(self) -> None:
+        interval_s = self._config.heartbeat_interval_ms / 1000.0
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=interval_s)
+                return
+            except asyncio.TimeoutError:
+                try:
+                    await self._send_heartbeat_once()
+                except Exception:
+                    pass
+
+    async def _send_heartbeat_once(self) -> None:
+        group = self._config.group_id or "default-group"
+        cmd = CommandBuilder.heartbeat(
+            self._config.topic,
+            group,
+            self._member_id,
+            self._generation,
+        )
+        resp = await self._send_command(cmd)
+        if resp.startswith("OK"):
+            return
+        if is_coordinator_failure(resp):
+            self._request_rejoin()
+            raise ConnectionError(f"coordinator rejected heartbeat: {resp}")
+        if resp.startswith("ERROR:"):
+            raise ConnectionError(f"heartbeat failed: {resp}")
 
     async def _commit_loop(self) -> None:
         while not self._stop_event.is_set():

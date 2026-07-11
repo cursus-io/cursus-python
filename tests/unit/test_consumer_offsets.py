@@ -244,3 +244,68 @@ def test_partition_workers_are_not_added_to_background_workers():
     assert started == [(0, 1), (1, 1)]
     assert len(consumer._partition_workers) == 2
     assert consumer._workers == []
+
+def test_heartbeat_coordinator_failure_requests_rejoin():
+    consumer = make_consumer()
+    consumer._generation = 7
+    consumer._member_id = "member-1"
+    sent: list[str] = []
+
+    def fake_send(cmd: str) -> str:
+        sent.append(cmd)
+        return "ERROR: GEN_MISMATCH expected=8 actual=7"
+
+    consumer._send_coordinator_command = fake_send  # type: ignore[method-assign]
+
+    with pytest.raises(ConnectionError, match="coordinator rejected heartbeat"):
+        consumer._send_heartbeat_once()
+
+    assert consumer._rejoin_required.is_set()
+    assert sent == ["HEARTBEAT topic=orders group=workers member=member-1 generation=7"]
+
+
+def test_async_heartbeat_loop_is_singleton():
+    import asyncio
+
+    from cursus.async_consumer import AsyncConsumer
+
+    async def scenario() -> None:
+        consumer = AsyncConsumer(ConsumerConfig(topic="orders", group_id="workers"))
+
+        async def fake_send(_cmd: str) -> str:
+            return "OK"
+
+        consumer._send_command = fake_send  # type: ignore[method-assign]
+        consumer._ensure_heartbeat_loop()
+        first = consumer._heartbeat_task
+        consumer._ensure_heartbeat_loop()
+        assert consumer._heartbeat_task is first
+        await consumer.close()
+
+    asyncio.run(scenario())
+
+
+def test_async_heartbeat_coordinator_failure_requests_rejoin():
+    import asyncio
+
+    from cursus.async_consumer import AsyncConsumer
+
+    async def scenario() -> None:
+        consumer = AsyncConsumer(ConsumerConfig(topic="orders", group_id="workers"))
+        consumer._generation = 7
+        consumer._member_id = "member-1"
+        sent: list[str] = []
+
+        async def fake_send(cmd: str) -> str:
+            sent.append(cmd)
+            return "ERROR: member_not_found member=member-1"
+
+        consumer._send_command = fake_send  # type: ignore[method-assign]
+
+        with pytest.raises(ConnectionError, match="coordinator rejected heartbeat"):
+            await consumer._send_heartbeat_once()
+
+        assert consumer._rejoin_event.is_set()
+        assert sent == ["HEARTBEAT topic=orders group=workers member=member-1 generation=7"]
+
+    asyncio.run(scenario())

@@ -316,15 +316,25 @@ class Consumer:
             if self._done.is_set():
                 break
             try:
-                cmd = CommandBuilder.heartbeat(
-                    self._config.topic,
-                    self._config.group_id or "default-group",
-                    self._member_id,
-                    self._generation,
-                )
-                self._send_coordinator_command(cmd)
+                self._send_heartbeat_once()
             except Exception:
                 pass
+
+    def _send_heartbeat_once(self) -> None:
+        cmd = CommandBuilder.heartbeat(
+            self._config.topic,
+            self._config.group_id or "default-group",
+            self._member_id,
+            self._generation,
+        )
+        resp = self._send_coordinator_command(cmd)
+        if resp.startswith("OK"):
+            return
+        if is_coordinator_failure(resp):
+            self._request_rejoin()
+            raise ConnectionError(f"coordinator rejected heartbeat: {resp}")
+        if resp.startswith("ERROR:"):
+            raise ConnectionError(f"heartbeat failed: {resp}")
 
     def _start_metadata_refresh(self) -> None:
         t = threading.Thread(target=self._metadata_refresh_loop, daemon=True)

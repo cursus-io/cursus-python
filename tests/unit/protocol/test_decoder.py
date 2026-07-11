@@ -176,4 +176,9 @@ def test_commit_failure_classifiers():
     assert is_coordinator_failure("ERROR: NOT_COORDINATOR host=127.0.0.1 port=9001")
     assert is_stale_producer_epoch("ERROR: stale_producer_epoch producer=p1")
     assert is_terminal_producer_error("ERROR: idempotency_gap expected=3 actual=5")
+    assert is_terminal_producer_error(
+        "ERROR: broker_error reason=\"idempotency gap expected 3 actual 5\""
+    )
+    assert is_terminal_producer_error("ERROR: broker_error reason=\"idempotency error\"")
+    assert is_terminal_producer_error("ERROR: stale producer epoch producer=p1")
     assert is_terminal_producer_error("ERROR: first message for producer must use seqNum=1")

@@ -154,9 +154,13 @@ def is_terminal_producer_error(response: str) -> bool:
         token in resp
         for token in (
             "stale_producer_epoch",
+            "stale producer epoch",
             "idempotency_gap",
+            "idempotency gap",
+            "idempotency error",
             "first message",
             "seqnum=1",
+            "seqnum 1",
             "seq_num=1",
         )
     )
