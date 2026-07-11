@@ -24,3 +24,7 @@ class TopicNotFoundError(CursusError):
 
 class NotLeaderError(CursusError):
     pass
+
+
+class ProducerFencedError(CursusError):
+    pass

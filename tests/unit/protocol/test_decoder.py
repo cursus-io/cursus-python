@@ -14,6 +14,7 @@ from cursus.protocol.decoder import (
     is_coordinator_failure,
     is_offset_out_of_range,
     is_offset_regression,
+    is_stale_producer_epoch,
     is_stream_control_frame,
 )
 from cursus.protocol.encoder import encode_batch
@@ -170,4 +171,6 @@ def test_commit_failure_classifiers():
     assert is_coordinator_failure("ERROR: GEN_MISMATCH expected=2 actual=1")
     assert is_coordinator_failure("ERROR: NOT_OWNER partition=0")
     assert is_coordinator_failure("ERROR: member_not_found member=m1")
+    assert is_coordinator_failure("ERROR: group_not_found group=g1")
     assert is_coordinator_failure("ERROR: NOT_COORDINATOR host=127.0.0.1 port=9001")
+    assert is_stale_producer_epoch("ERROR: stale_producer_epoch producer=p1")

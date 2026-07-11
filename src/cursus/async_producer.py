@@ -9,7 +9,7 @@ from cursus.config import ProducerConfig
 from cursus.connection.async_conn import AsyncConnection
 from cursus.errors import ProducerClosedError
 from cursus.protocol.command import CommandBuilder
-from cursus.protocol.decoder import decode_ack
+from cursus.protocol.decoder import decode_ack, is_stale_producer_epoch
 from cursus.protocol.encoder import encode_batch, encode_message
 from cursus.types import Message
 
@@ -107,6 +107,10 @@ class AsyncProducer:
                 ack = decode_ack(resp_data)
                 if ack.status == "OK":
                     self._unique_ack_count += len(batch)
+                elif ack.error and is_stale_producer_epoch(ack.error):
+                    self._closed = True
+                    self._stop_event.set()
+                    continue
             except Exception:
                 if conn is not None:
                     await conn.close()

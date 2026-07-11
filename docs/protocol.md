@@ -34,7 +34,7 @@ packet-beta
 | `LEAVE_GROUP` | `LEAVE_GROUP topic=<t> group=<g> member=<m>` |
 | `HEARTBEAT` | `HEARTBEAT topic=<t> group=<g> member=<m> generation=<n>` |
 | `COMMIT_OFFSET` | `COMMIT_OFFSET topic=<t> partition=<p> group=<g> offset=<o> generation=<n> member=<m>` |
-| `BATCH_COMMIT` | `BATCH_COMMIT topic=<t> group=<g> generation=<n> member=<m> <pid:off,...>` |
+| `BATCH_COMMIT` | `BATCH_COMMIT topic=<t> group=<g> member=<m> generation=<n> P<partition>:<offset>,...` |
 | `FETCH_OFFSET` | `FETCH_OFFSET topic=<t> partition=<p> group=<g>` |
 
 ## Batch Message Encoding

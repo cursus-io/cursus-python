@@ -59,13 +59,9 @@ def test_commit_offset():
 
 
 def test_batch_commit():
-    offsets = {0: 100, 2: 200}
+    offsets = {0: 100, 1: 21}
     result = CommandBuilder.batch_commit("orders", "grp", "m1", 3, offsets)
-    assert result.startswith("BATCH_COMMIT topic=orders group=grp generation=3 member=m1 ")
-    parts_str = result.split(" ", 5)[-1]
-    pairs = dict(p.split(":") for p in parts_str.split(","))
-    assert pairs["0"] == "100"
-    assert pairs["2"] == "200"
+    assert result == "BATCH_COMMIT topic=orders group=grp member=m1 generation=3 P0:100,P1:21"
 
 
 def test_fetch_offset():

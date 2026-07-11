@@ -40,6 +40,7 @@ class AsyncConsumer:
         self._dirty_count = 0
         self._last_delivered: Message | None = None
         self._leader_addr: str | None = None
+        self._coordinator_addr: str | None = None
 
     async def _connect(self) -> AsyncConnection:
         addrs = list(self._config.brokers)
@@ -57,13 +58,26 @@ class AsyncConsumer:
         raise ConnectionError(f"failed to connect to any broker: {self._config.brokers}")
 
     async def _send_command(self, cmd: str) -> str:
-        conn = await self._connect()
-        try:
-            await conn.write_frame(encode_message("", cmd))
-            resp = await conn.read_frame()
-            return resp.decode()
-        finally:
-            await conn.close()
+        for _attempt in range(3):
+            conn = await self._connect()
+            try:
+                await conn.write_frame(encode_message("", cmd))
+                resp = (await conn.read_frame()).decode()
+            finally:
+                await conn.close()
+            if "NOT_COORDINATOR" in resp:
+                host, port = None, None
+                for part in resp.split():
+                    if part.startswith("host="):
+                        host = part.split("=", 1)[1]
+                    elif part.startswith("port="):
+                        port = part.split("=", 1)[1]
+                if host and port:
+                    self._leader_addr = f"{host}:{port}"
+                    self._coordinator_addr = self._leader_addr
+                    continue
+            return resp
+        return resp
 
     async def _join_and_sync(self) -> None:
         group = self._config.group_id or "default-group"
@@ -211,10 +225,14 @@ class AsyncConsumer:
 
     def _handle_stream_control(self, partition: int, control: StreamControl) -> None:
         if control.reason == "offset_out_of_range":
-            if control.requested is None or control.earliest is None or control.latest is None:
+            if control.earliest is None or control.latest is None:
                 raise ConnectionError(f"stream control missing offset range: {control}")
             self._offsets[partition] = self._resolve_offset_reset(
-                OffsetRange(control.requested, control.earliest, control.latest)
+                OffsetRange(
+                    control.requested or self._offsets.get(partition, 0),
+                    control.earliest,
+                    control.latest,
+                )
             )
             return
         if control.type == "CLOSE" and control.offset is not None:

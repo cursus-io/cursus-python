@@ -6,6 +6,7 @@ from cursus.errors import (
     CursusError,
     NotLeaderError,
     ProducerClosedError,
+    ProducerFencedError,
     ProtocolError,
     TopicNotFoundError,
 )
@@ -16,6 +17,8 @@ def test_all_errors_inherit_from_cursus_error():
         CursusConnectionError,
         ProtocolError,
         ProducerClosedError,
+        ProducerFencedError,
+        ProducerFencedError,
         ConsumerClosedError,
         TopicNotFoundError,
         NotLeaderError,

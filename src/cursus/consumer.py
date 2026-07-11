@@ -392,10 +392,14 @@ class Consumer:
 
     def _handle_stream_control(self, partition: int, control: StreamControl) -> None:
         if control.reason == "offset_out_of_range":
-            if control.requested is None or control.earliest is None or control.latest is None:
+            if control.earliest is None or control.latest is None:
                 raise ConnectionError(f"stream control missing offset range: {control}")
             self._offsets[partition] = self._resolve_offset_reset(
-                OffsetRange(control.requested, control.earliest, control.latest)
+                OffsetRange(
+                    control.requested or self._offsets.get(partition, 0),
+                    control.earliest,
+                    control.latest,
+                )
             )
             return
         if control.type == "CLOSE" and control.offset is not None:

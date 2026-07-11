@@ -13,6 +13,7 @@ from cursus.errors import (
     CursusError,
     NotLeaderError,
     ProducerClosedError,
+    ProducerFencedError,
     ProtocolError,
     TopicNotFoundError,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "ConnectionError",
     "ProtocolError",
     "ProducerClosedError",
+    "ProducerFencedError",
     "ConsumerClosedError",
     "TopicNotFoundError",
     "NotLeaderError",

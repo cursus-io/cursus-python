@@ -138,8 +138,18 @@ def is_coordinator_failure(response: str) -> bool:
     resp = response.strip()
     return any(
         token in resp
-        for token in ("GEN_MISMATCH", "NOT_OWNER", "member_not_found", "NOT_COORDINATOR")
+        for token in (
+            "GEN_MISMATCH",
+            "NOT_OWNER",
+            "member_not_found",
+            "group_not_found",
+            "NOT_COORDINATOR",
+        )
     )
+
+
+def is_stale_producer_epoch(response: str) -> bool:
+    return "stale_producer_epoch" in response
 
 
 def is_offset_out_of_range(response: str) -> bool:

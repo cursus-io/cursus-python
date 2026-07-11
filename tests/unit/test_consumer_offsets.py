@@ -45,7 +45,6 @@ def test_stream_control_offset_out_of_range_uses_reset_policy():
         StreamControl(
             type="CLOSE",
             reason="offset_out_of_range",
-            requested=3,
             earliest=10,
             latest=20,
         ),
@@ -116,5 +115,5 @@ def test_batch_commit_success_advances_multiple_partitions():
     assert consumer._committed_offsets[0] == 11
     assert consumer._committed_offsets[1] == 21
     assert sent == [
-        "BATCH_COMMIT topic=orders group=workers generation=7 member=member-1 0:11,1:21"
+        "BATCH_COMMIT topic=orders group=workers member=member-1 generation=7 P0:11,P1:21"
     ]

@@ -114,7 +114,7 @@ sequenceDiagram
         C->>Broker: COMMIT_OFFSET partition=P offset=N+1
         Broker-->>C: OK
     else commit_batch_size reached
-        C->>Broker: BATCH_COMMIT P:N+1,...
+        C->>Broker: BATCH_COMMIT P<partition>:N+1,...
         Broker-->>C: OK
     else auto_commit_interval_s fires
         C->>Broker: COMMIT_OFFSET lastProcessedOffset+1
@@ -141,6 +141,8 @@ async with AsyncConsumer(config) as consumer:
 
 For at-least-once processing, process the message first and commit `lastProcessedOffset + 1` only after the handler succeeds. Committing before processing is possible for at-most-once workflows, but a crash after the commit can skip unprocessed records. Cursus does not yet provide Kafka transaction-level exactly-once semantics.
 
-If the broker returns `ERROR: offset_regression ...`, the SDK treats the commit as failed and does not advance or rewind local committed state. Coordinator failures such as `GEN_MISMATCH`, `NOT_OWNER`, `member_not_found`, and `NOT_COORDINATOR` trigger rediscovery/rejoin behavior.
+If the broker returns `ERROR: offset_regression ...`, the SDK treats the commit as failed and does not advance or rewind local committed state. Coordinator failures such as `GEN_MISMATCH`, `NOT_OWNER`, `member_not_found`, `group_not_found`, and `NOT_COORDINATOR` trigger rediscovery/rejoin behavior.
 
 Streaming consumers recognize UTF-8 `STREAM_CONTROL` frames before binary batch decoding. `STREAM_CONTROL type=CLOSE reason=offset_out_of_range ...` applies the same `auto_offset_reset` policy as pull `ERROR: OFFSET_OUT_OF_RANGE ...`; zero-length stream frames are keepalives.
+
+External DB offset stores should be treated as legacy fallback or migration aids; broker committed offsets are the default source of truth.

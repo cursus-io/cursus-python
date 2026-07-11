@@ -6,9 +6,9 @@ from typing_extensions import Self
 from cursus.compression.registry import CompressionRegistry
 from cursus.config import ProducerConfig
 from cursus.connection.sync_conn import SyncConnection
-from cursus.errors import ProducerClosedError
+from cursus.errors import ProducerClosedError, ProducerFencedError
 from cursus.protocol.command import CommandBuilder
-from cursus.protocol.decoder import decode_ack
+from cursus.protocol.decoder import decode_ack, is_stale_producer_epoch
 from cursus.protocol.encoder import encode_batch, encode_message
 from cursus.types import Message
 
@@ -185,6 +185,10 @@ class Producer:
                     self._send_batch(conn, part, batch)
                     sent = True
                     break
+                except ProducerFencedError:
+                    self._done.set()
+                    sent = True
+                    break
                 except Exception:
                     if conn is not None:
                         conn.close()
@@ -220,6 +224,9 @@ class Producer:
         if ack.status == "OK":
             with self._ack_lock:
                 self._unique_ack_count += len(batch)
+            return
+        if ack.error and is_stale_producer_epoch(ack.error):
+            raise ProducerFencedError(ack.error)
 
     @property
     def unique_ack_count(self) -> int:

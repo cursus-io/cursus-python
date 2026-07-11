@@ -68,10 +68,10 @@ class CommandBuilder:
     def batch_commit(
         topic: str, group: str, member: str, generation: int, offsets: dict[int, int]
     ) -> str:
-        parts = ",".join(f"{pid}:{off}" for pid, off in offsets.items())
+        parts = ",".join(f"P{pid}:{off}" for pid, off in offsets.items())
         return (
-            f"BATCH_COMMIT topic={topic} group={group} generation={generation} "
-            f"member={member} {parts}"
+            f"BATCH_COMMIT topic={topic} group={group} member={member} "
+            f"generation={generation} {parts}"
         )
 
     @staticmethod
