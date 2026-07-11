@@ -43,21 +43,21 @@ sequenceDiagram
     participant Broker as Cursus Broker
 
     App->>C: Consumer(config) / start()
-    C->>Broker: JOIN_GROUP topic group member
+    C->>Broker: JOIN_GROUP topic=T group=G member=M
     Broker-->>C: partition assignments
-    C->>Broker: SYNC_GROUP generation
+    C->>Broker: SYNC_GROUP topic=T group=G member=M generation=N
     Broker-->>C: confirmed assignment
 
     loop every heartbeat_interval_ms
-        C->>Broker: HEARTBEAT
-        Broker-->>C: OK
+        C->>Broker: HEARTBEAT topic=T group=G member=M generation=N
+        Broker-->>C: OK or coordinator failure
     end
 
-    C->>Broker: STREAM / CONSUME (assigned partitions)
+    C->>Broker: FETCH_OFFSET, then STREAM / CONSUME (assigned partitions)
     loop messages
         Broker-->>C: batch frame
         C-->>App: yield Message
-        C->>Broker: COMMIT_OFFSET / BATCH_COMMIT
+        C->>Broker: COMMIT_OFFSET / BATCH_COMMIT nextOffset
     end
 
     App->>C: close()

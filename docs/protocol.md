@@ -27,15 +27,30 @@ packet-beta
 | Command | Format |
 |---|---|
 | `CREATE` | `CREATE topic=<t> partitions=<n>` |
-| `CONSUME` | `CONSUME <topic> <partition> <offset>` |
-| `STREAM` | `STREAM <topic> <partition> <offset>` |
+| `CONSUME` | `CONSUME topic=<t> partition=<p> offset=<nextOffset> member=<m> group=<g> generation=<n>` |
+| `STREAM` | `STREAM topic=<t> partition=<p> group=<g> member=<m> generation=<n> offset=<nextOffset>` |
 | `JOIN_GROUP` | `JOIN_GROUP topic=<t> group=<g> member=<m>` |
 | `SYNC_GROUP` | `SYNC_GROUP topic=<t> group=<g> member=<m> generation=<n>` |
 | `LEAVE_GROUP` | `LEAVE_GROUP topic=<t> group=<g> member=<m>` |
 | `HEARTBEAT` | `HEARTBEAT topic=<t> group=<g> member=<m> generation=<n>` |
 | `COMMIT_OFFSET` | `COMMIT_OFFSET topic=<t> partition=<p> group=<g> offset=<o> generation=<n> member=<m>` |
-| `BATCH_COMMIT` | `BATCH_COMMIT topic=<t> group=<g> member=<m> generation=<n> P<partition>:<offset>,...` |
+| `BATCH_COMMIT` | `BATCH_COMMIT topic=<t> group=<g> member=<m> generation=<n> P<partition>:<nextOffset>,...` |
 | `FETCH_OFFSET` | `FETCH_OFFSET topic=<t> partition=<p> group=<g>` |
+
+
+## Consumer Offset Contract
+
+Consumer group offsets are broker-managed and durable. The committed value is the next offset to read, so after processing offset `N`, the SDK commits `N + 1`. After `JOIN_GROUP` and `SYNC_GROUP`, sync and async consumers call `FETCH_OFFSET` for each assigned partition before issuing `CONSUME` or `STREAM`.
+
+`CONSUME` and `STREAM` are stateless partition-leader read paths. Ownership and generation fencing are enforced by coordinator commands such as `HEARTBEAT`, `COMMIT_OFFSET`, and `BATCH_COMMIT`. Batch commit entries use the `P<partition>:<nextOffset>` form, for example:
+
+```text
+BATCH_COMMIT topic=orders group=workers member=m-1 generation=7 P0:11,P1:21
+```
+
+Lower offset commits are rejected by the broker as `ERROR: offset_regression ...`; the SDK treats that as a failed commit and does not rewind local committed state. Coordinator errors such as `GEN_MISMATCH`, `NOT_OWNER`, `member_not_found`, `group_not_found`, and `NOT_COORDINATOR` trigger coordinator rediscovery or group rejoin.
+
+Pull consumers handle `ERROR: OFFSET_OUT_OF_RANGE requested=<N> earliest=<N> latest=<N>`, and streaming consumers handle `STREAM_CONTROL type=CLOSE reason=offset_out_of_range ...`. Zero-length stream frames are keepalives.
 
 ## Batch Message Encoding
 
@@ -73,7 +88,7 @@ flowchart TD
     Client -->|"text command"| Router{Command Type}
 
     Router -->|"CREATE"| Create["CREATE topic=&lt;t&gt; partitions=&lt;n&gt;"]
-    Router -->|"CONSUME / STREAM"| Consume["CONSUME or STREAM\ntopic partition offset"]
+    Router -->|"CONSUME / STREAM"| Consume["CONSUME / STREAM\ntopic partition nextOffset"]
     Router -->|"Group ops"| Group["JOIN_GROUP / SYNC_GROUP\nHEARTBEAT / LEAVE_GROUP"]
     Router -->|"Offset ops"| Offset["COMMIT_OFFSET\nBATCH_COMMIT\nFETCH_OFFSET"]
     Router -->|"binary batch"| Batch["encode_batch()\nmagic=0xBA7C\n+ header + messages"]
