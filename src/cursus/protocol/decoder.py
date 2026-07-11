@@ -2,7 +2,7 @@ import json
 import struct
 
 from cursus.errors import ProtocolError
-from cursus.types import AckResponse, Message
+from cursus.types import AckResponse, Message, OffsetRange, StreamControl
 
 BATCH_MAGIC = 0xBA7C
 
@@ -87,6 +87,7 @@ def decode_batch(data: bytes) -> tuple[list[Message], str, int]:
                 schema_version=schema_version,
                 aggregate_version=aggregate_version,
                 metadata=metadata,
+                partition=partition,
             )
         )
 
@@ -97,13 +98,23 @@ def decode_ok_fields(response: str) -> dict[str, str]:
     resp = response.strip()
     if not resp.startswith("OK"):
         return {}
+    return _decode_fields(resp.split()[1:])
 
+
+def _decode_fields(parts: list[str]) -> dict[str, str]:
     fields: dict[str, str] = {}
-    for part in resp.split()[1:]:
+    for part in parts:
         key, sep, value = part.partition("=")
         if sep:
             fields[key] = value
     return fields
+
+
+def decode_error_fields(response: str) -> dict[str, str]:
+    resp = response.strip()
+    if not resp.startswith("ERROR:"):
+        return {}
+    return _decode_fields(resp.split()[1:])
 
 
 def decode_offset_response(response: str) -> int:
@@ -117,6 +128,59 @@ def decode_offset_response(response: str) -> int:
     if "offset" not in fields:
         raise ValueError(f"missing offset in response: {resp}")
     return int(fields["offset"])
+
+
+def is_offset_regression(response: str) -> bool:
+    return response.strip().startswith("ERROR: offset_regression")
+
+
+def is_coordinator_failure(response: str) -> bool:
+    resp = response.strip()
+    return any(
+        token in resp
+        for token in ("GEN_MISMATCH", "NOT_OWNER", "member_not_found", "NOT_COORDINATOR")
+    )
+
+
+def is_offset_out_of_range(response: str) -> bool:
+    return response.strip().startswith("ERROR: OFFSET_OUT_OF_RANGE")
+
+
+def decode_offset_out_of_range(response: str) -> OffsetRange:
+    fields = decode_error_fields(response)
+    missing = {"requested", "earliest", "latest"} - fields.keys()
+    if missing:
+        raise ValueError(f"missing offset range fields {sorted(missing)} in response: {response}")
+    return OffsetRange(
+        requested=int(fields["requested"]),
+        earliest=int(fields["earliest"]),
+        latest=int(fields["latest"]),
+    )
+
+
+def is_stream_control_frame(data: bytes) -> bool:
+    if len(data) == 0:
+        return False
+    try:
+        return data.decode("utf-8").strip().startswith("STREAM_CONTROL")
+    except UnicodeDecodeError:
+        return False
+
+
+def decode_stream_control(data: bytes | str) -> StreamControl:
+    text = data.decode("utf-8") if isinstance(data, bytes) else data
+    resp = text.strip()
+    if not resp.startswith("STREAM_CONTROL"):
+        raise ValueError(f"unexpected stream control frame: {resp}")
+    fields = _decode_fields(resp.split()[1:])
+    return StreamControl(
+        type=fields.get("type", ""),
+        reason=fields.get("reason", ""),
+        offset=int(fields["offset"]) if "offset" in fields else None,
+        requested=int(fields["requested"]) if "requested" in fields else None,
+        earliest=int(fields["earliest"]) if "earliest" in fields else None,
+        latest=int(fields["latest"]) if "latest" in fields else None,
+    )
 
 
 def decode_version_response(response: str) -> int:

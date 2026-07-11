@@ -10,6 +10,7 @@ config = ConsumerConfig(
     topic="my-topic",
     group_id="my-group",
     mode=ConsumerMode.STREAMING,
+    auto_offset_reset="earliest",
 )
 
 with Consumer(config) as consumer:
@@ -90,7 +91,10 @@ flowchart TD
 
 ## Offset Management
 
-Offsets are tracked per-partition and committed to the broker. Configure with:
+Offsets are tracked per `(topic, group_id, partition)` and the broker committed offset is the source of truth for resume. After `JOIN_GROUP` / `SYNC_GROUP`, the SDK calls `FETCH_OFFSET` for each assigned partition and starts `CONSUME` / `STREAM` from that broker-reported next offset.
+
+Configure with:
+- `auto_offset_reset` (default: `earliest`): `earliest`, `latest`, or `error` when the committed/requested offset is outside retention
 - `auto_commit_interval_s` (default: 5.0)
 - `immediate_commit` (default: False)
 - `commit_batch_size` (default: 100)
@@ -102,17 +106,18 @@ sequenceDiagram
     participant Broker as Cursus Broker
 
     Broker-->>C: Message (offset=N, partition=P)
-    C->>C: offsets[P] = N
+    C->>C: nextFetchOffset[P] = N + 1
     C-->>App: yield Message
+    App-->>C: handler/iterator body returns
 
     alt immediate_commit=True
-        C->>Broker: COMMIT_OFFSET partition=P offset=N
+        C->>Broker: COMMIT_OFFSET partition=P offset=N+1
         Broker-->>C: OK
     else commit_batch_size reached
-        C->>Broker: BATCH_COMMIT pid:offset,...
+        C->>Broker: BATCH_COMMIT P:N+1,...
         Broker-->>C: OK
     else auto_commit_interval_s fires
-        C->>Broker: COMMIT_OFFSET for each dirty partition
+        C->>Broker: COMMIT_OFFSET lastProcessedOffset+1
         Broker-->>C: OK
     end
 ```
@@ -130,3 +135,12 @@ async with AsyncConsumer(config) as consumer:
 ## Shutdown
 
 `close()` sends `LEAVE_GROUP`, stops workers, and joins threads. Use signal handlers or context managers for clean shutdown.
+
+
+### Delivery semantics
+
+For at-least-once processing, process the message first and commit `lastProcessedOffset + 1` only after the handler succeeds. Committing before processing is possible for at-most-once workflows, but a crash after the commit can skip unprocessed records. Cursus does not yet provide Kafka transaction-level exactly-once semantics.
+
+If the broker returns `ERROR: offset_regression ...`, the SDK treats the commit as failed and does not advance or rewind local committed state. Coordinator failures such as `GEN_MISMATCH`, `NOT_OWNER`, `member_not_found`, and `NOT_COORDINATOR` trigger rediscovery/rejoin behavior.
+
+Streaming consumers recognize UTF-8 `STREAM_CONTROL` frames before binary batch decoding. `STREAM_CONTROL type=CLOSE reason=offset_out_of_range ...` applies the same `auto_offset_reset` policy as pull `ERROR: OFFSET_OUT_OF_RANGE ...`; zero-length stream frames are keepalives.

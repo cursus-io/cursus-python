@@ -31,6 +31,7 @@
 | `group_id` | `str \| None` | `None` | Consumer group ID |
 | `consumer_id` | `str` | auto-generated | Consumer identifier |
 | `mode` | `ConsumerMode` | `STREAMING` | `POLLING` or `STREAMING` |
+| `auto_offset_reset` | `AutoOffsetReset` | `EARLIEST` | Retention gap policy: `earliest`, `latest`, or `error` |
 | `auto_commit_interval_s` | `float` | `5.0` | Offset commit interval (seconds) |
 | `session_timeout_ms` | `int` | `30000` | Session timeout |
 | `heartbeat_interval_ms` | `int` | `3000` | Heartbeat interval |

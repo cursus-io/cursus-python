@@ -8,9 +8,18 @@ from cursus.config import ConsumerConfig
 from cursus.connection.sync_conn import SyncConnection
 from cursus.errors import ConnectionError
 from cursus.protocol.command import CommandBuilder
-from cursus.protocol.decoder import decode_batch, decode_offset_response
+from cursus.protocol.decoder import (
+    decode_batch,
+    decode_offset_out_of_range,
+    decode_offset_response,
+    decode_stream_control,
+    is_coordinator_failure,
+    is_offset_out_of_range,
+    is_offset_regression,
+    is_stream_control_frame,
+)
 from cursus.protocol.encoder import encode_message
-from cursus.types import ConsumerMode, Message
+from cursus.types import AutoOffsetReset, ConsumerMode, Message, OffsetRange, StreamControl
 
 
 class Consumer:
@@ -29,6 +38,9 @@ class Consumer:
         self._member_id: str = config.consumer_id or ""
         self._assignments: list[int] = []
         self._offsets: dict[int, int] = {}
+        self._committed_offsets: dict[int, int] = {}
+        self._dirty_offsets: dict[int, int] = {}
+        self._dirty_count = 0
         self._partition_leaders: dict[int, str] = {}
         self._leader_addr: str | None = None
         self._coordinator_addr: str | None = None
@@ -36,6 +48,7 @@ class Consumer:
     def start(self, handler: Callable[[Message], None]) -> None:
         self._join_and_sync()
         self._start_heartbeat()
+        self._start_commit_loop()
         self._start_partition_workers()
 
         while not self._done.is_set():
@@ -51,10 +64,12 @@ class Consumer:
                 if self._done.is_set():
                     break
                 handler(msg)
+                self._mark_processed(msg)
 
     def __iter__(self) -> Iterator[Message]:
         self._join_and_sync()
         self._start_heartbeat()
+        self._start_commit_loop()
         self._start_partition_workers()
 
         while not self._done.is_set():
@@ -70,6 +85,7 @@ class Consumer:
                 if self._done.is_set():
                     return
                 yield msg
+                self._mark_processed(msg)
 
     def _connect_to_leader(self) -> SyncConnection:
         addrs = list(self._config.brokers)
@@ -201,7 +217,9 @@ class Consumer:
                     self._config.topic, pid, self._config.group_id or "default-group"
                 )
                 resp = self._send_coordinator_command(fetch_cmd)
-                self._offsets[pid] = decode_offset_response(resp)
+                offset = decode_offset_response(resp)
+                self._offsets[pid] = offset
+                self._committed_offsets[pid] = offset
             except ValueError as exc:
                 raise ConnectionError(f"fetch offset failed: {resp}") from exc
 
@@ -316,6 +334,9 @@ class Consumer:
                     resp_data = self._compression.decompress(
                         resp_data, self._config.compression_type
                     )
+                    if len(resp_data) == 0:
+                        continue
+
                     if len(resp_data) > 2:
                         try:
                             resp_str = resp_data.decode()
@@ -326,8 +347,21 @@ class Consumer:
                                         self._partition_leaders[partition] = parts[i + 1]
                                         break
                                 continue
+                            if is_coordinator_failure(resp_str):
+                                self._join_and_sync()
+                                continue
+                            if is_offset_out_of_range(resp_str):
+                                self._offsets[partition] = self._resolve_offset_reset(
+                                    decode_offset_out_of_range(resp_str)
+                                )
+                                continue
                         except UnicodeDecodeError:
                             pass
+
+                        if is_stream_control_frame(resp_data):
+                            control = decode_stream_control(resp_data)
+                            self._handle_stream_control(partition, control)
+                            continue
 
                         messages, _, _ = decode_batch(resp_data)
                         if messages:
@@ -343,6 +377,96 @@ class Consumer:
 
             self._done.wait(timeout=0.5)
 
+
+    def _resolve_offset_reset(self, offset_range: OffsetRange) -> int:
+        policy = self._config.auto_offset_reset
+        if policy == AutoOffsetReset.EARLIEST:
+            return offset_range.earliest
+        if policy == AutoOffsetReset.LATEST:
+            return offset_range.latest
+        self._done.set()
+        raise ConnectionError(
+            "offset out of range: "
+            f"requested={offset_range.requested} earliest={offset_range.earliest} "
+            f"latest={offset_range.latest}"
+        )
+
+    def _handle_stream_control(self, partition: int, control: StreamControl) -> None:
+        if control.reason == "offset_out_of_range":
+            if control.requested is None or control.earliest is None or control.latest is None:
+                raise ConnectionError(f"stream control missing offset range: {control}")
+            self._offsets[partition] = self._resolve_offset_reset(
+                OffsetRange(control.requested, control.earliest, control.latest)
+            )
+            return
+        if control.type == "CLOSE" and control.offset is not None:
+            self._offsets[partition] = control.offset
+
+    def _mark_processed(self, msg: Message) -> None:
+        partition = msg.partition
+        next_offset = msg.offset + 1
+        if next_offset <= self._committed_offsets.get(partition, 0):
+            return
+        if self._config.immediate_commit:
+            self._commit_offsets({partition: next_offset})
+            return
+        self._dirty_offsets[partition] = max(next_offset, self._dirty_offsets.get(partition, 0))
+        self._dirty_count += 1
+        if self._dirty_count >= self._config.commit_batch_size:
+            self._commit_dirty_offsets()
+
+
+    def _start_commit_loop(self) -> None:
+        t = threading.Thread(target=self._commit_loop, daemon=True)
+        t.start()
+        self._workers.append(t)
+
+    def _commit_loop(self) -> None:
+        interval_s = self._config.auto_commit_interval_s
+        while not self._done.is_set():
+            self._done.wait(timeout=interval_s)
+            if self._done.is_set():
+                break
+            try:
+                self._commit_dirty_offsets()
+            except Exception:
+                pass
+
+    def _commit_dirty_offsets(self) -> None:
+        if not self._dirty_offsets:
+            return
+        offsets = dict(self._dirty_offsets)
+        self._commit_offsets(offsets)
+        for partition in offsets:
+            self._dirty_offsets.pop(partition, None)
+        self._dirty_count = 0
+
+    def _commit_offsets(self, offsets: dict[int, int]) -> None:
+        if not offsets:
+            return
+        group = self._config.group_id or "default-group"
+        if len(offsets) == 1:
+            partition, offset = next(iter(offsets.items()))
+            cmd = CommandBuilder.commit_offset(
+                self._config.topic, group, partition, offset, self._generation, self._member_id
+            )
+        else:
+            cmd = CommandBuilder.batch_commit(
+                self._config.topic, group, self._member_id, self._generation, offsets
+            )
+        resp = self._send_coordinator_command(cmd)
+        if resp.startswith("OK"):
+            for partition, offset in offsets.items():
+                if offset > self._committed_offsets.get(partition, 0):
+                    self._committed_offsets[partition] = offset
+            return
+        if is_offset_regression(resp):
+            raise ConnectionError(f"offset commit rejected: {resp}")
+        if is_coordinator_failure(resp):
+            self._join_and_sync()
+            raise ConnectionError(f"coordinator rejected offset commit: {resp}")
+        raise ConnectionError(f"offset commit failed: {resp}")
+
     def close(self) -> None:
         with self._close_lock:
             if self._closed:
@@ -352,6 +476,11 @@ class Consumer:
         self._done.set()
         with self._queue_cond:
             self._queue_cond.notify_all()
+
+        try:
+            self._commit_dirty_offsets()
+        except Exception:
+            pass
 
         if self._member_id:
             try:

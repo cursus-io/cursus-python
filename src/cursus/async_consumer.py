@@ -9,9 +9,18 @@ from cursus.config import ConsumerConfig
 from cursus.connection.async_conn import AsyncConnection
 from cursus.errors import ConnectionError
 from cursus.protocol.command import CommandBuilder
-from cursus.protocol.decoder import decode_batch, decode_offset_response
+from cursus.protocol.decoder import (
+    decode_batch,
+    decode_offset_out_of_range,
+    decode_offset_response,
+    decode_stream_control,
+    is_coordinator_failure,
+    is_offset_out_of_range,
+    is_offset_regression,
+    is_stream_control_frame,
+)
 from cursus.protocol.encoder import encode_message
-from cursus.types import ConsumerMode, Message
+from cursus.types import AutoOffsetReset, ConsumerMode, Message, OffsetRange, StreamControl
 
 
 class AsyncConsumer:
@@ -26,6 +35,10 @@ class AsyncConsumer:
         self._member_id = config.consumer_id or ""
         self._assignments: list[int] = []
         self._offsets: dict[int, int] = {}
+        self._committed_offsets: dict[int, int] = {}
+        self._dirty_offsets: dict[int, int] = {}
+        self._dirty_count = 0
+        self._last_delivered: Message | None = None
         self._leader_addr: str | None = None
 
     async def _connect(self) -> AsyncConnection:
@@ -83,11 +96,14 @@ class AsyncConsumer:
                 parts = sync_resp[start:end].replace(",", " ").split()
                 self._assignments = [int(p.strip()) for p in parts if p.strip().isdigit()]
 
+        self._tasks.append(asyncio.create_task(self._commit_loop()))
         for pid in self._assignments:
             try:
                 fetch_cmd = CommandBuilder.fetch_offset(self._config.topic, pid, group)
                 resp = await self._send_command(fetch_cmd)
-                self._offsets[pid] = decode_offset_response(resp)
+                offset = decode_offset_response(resp)
+                self._offsets[pid] = offset
+                self._committed_offsets[pid] = offset
             except ValueError as exc:
                 raise ConnectionError(f"fetch offset failed: {resp}") from exc
 
@@ -128,6 +144,24 @@ class AsyncConsumer:
                     resp_data = self._compression.decompress(
                         resp_data, self._config.compression_type
                     )
+                    if len(resp_data) == 0:
+                        continue
+                    try:
+                        resp_str = resp_data.decode()
+                        if is_coordinator_failure(resp_str):
+                            await self._join_and_sync()
+                            continue
+                        if is_offset_out_of_range(resp_str):
+                            self._offsets[partition] = self._resolve_offset_reset(
+                                decode_offset_out_of_range(resp_str)
+                            )
+                            continue
+                    except UnicodeDecodeError:
+                        pass
+                    if is_stream_control_frame(resp_data):
+                        control = decode_stream_control(resp_data)
+                        self._handle_stream_control(partition, control)
+                        continue
                     if len(resp_data) > 2:
                         messages, _, _ = decode_batch(resp_data)
                         for msg in messages:
@@ -148,18 +182,116 @@ class AsyncConsumer:
         return self
 
     async def __anext__(self) -> Message:
+        if self._last_delivered is not None:
+            await self._mark_processed(self._last_delivered)
+            self._last_delivered = None
         while not self._closed:
             try:
-                return await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                msg = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                self._last_delivered = msg
+                return msg
             except asyncio.TimeoutError:
                 if self._closed:
                     raise StopAsyncIteration
                 continue
         raise StopAsyncIteration
 
+
+    def _resolve_offset_reset(self, offset_range: OffsetRange) -> int:
+        policy = self._config.auto_offset_reset
+        if policy == AutoOffsetReset.EARLIEST:
+            return offset_range.earliest
+        if policy == AutoOffsetReset.LATEST:
+            return offset_range.latest
+        self._stop_event.set()
+        raise ConnectionError(
+            "offset out of range: "
+            f"requested={offset_range.requested} earliest={offset_range.earliest} "
+            f"latest={offset_range.latest}"
+        )
+
+    def _handle_stream_control(self, partition: int, control: StreamControl) -> None:
+        if control.reason == "offset_out_of_range":
+            if control.requested is None or control.earliest is None or control.latest is None:
+                raise ConnectionError(f"stream control missing offset range: {control}")
+            self._offsets[partition] = self._resolve_offset_reset(
+                OffsetRange(control.requested, control.earliest, control.latest)
+            )
+            return
+        if control.type == "CLOSE" and control.offset is not None:
+            self._offsets[partition] = control.offset
+
+    async def _mark_processed(self, msg: Message) -> None:
+        partition = msg.partition
+        next_offset = msg.offset + 1
+        if next_offset <= self._committed_offsets.get(partition, 0):
+            return
+        if self._config.immediate_commit:
+            await self._commit_offsets({partition: next_offset})
+            return
+        self._dirty_offsets[partition] = max(next_offset, self._dirty_offsets.get(partition, 0))
+        self._dirty_count += 1
+        if self._dirty_count >= self._config.commit_batch_size:
+            await self._commit_dirty_offsets()
+
+
+    async def _commit_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=self._config.auto_commit_interval_s
+                )
+            except asyncio.TimeoutError:
+                try:
+                    await self._commit_dirty_offsets()
+                except Exception:
+                    pass
+
+    async def _commit_dirty_offsets(self) -> None:
+        if not self._dirty_offsets:
+            return
+        offsets = dict(self._dirty_offsets)
+        await self._commit_offsets(offsets)
+        for partition in offsets:
+            self._dirty_offsets.pop(partition, None)
+        self._dirty_count = 0
+
+    async def _commit_offsets(self, offsets: dict[int, int]) -> None:
+        if not offsets:
+            return
+        group = self._config.group_id or "default-group"
+        if len(offsets) == 1:
+            partition, offset = next(iter(offsets.items()))
+            cmd = CommandBuilder.commit_offset(
+                self._config.topic, group, partition, offset, self._generation, self._member_id
+            )
+        else:
+            cmd = CommandBuilder.batch_commit(
+                self._config.topic, group, self._member_id, self._generation, offsets
+            )
+        resp = await self._send_command(cmd)
+        if resp.startswith("OK"):
+            for partition, offset in offsets.items():
+                if offset > self._committed_offsets.get(partition, 0):
+                    self._committed_offsets[partition] = offset
+            return
+        if is_offset_regression(resp):
+            raise ConnectionError(f"offset commit rejected: {resp}")
+        if is_coordinator_failure(resp):
+            await self._join_and_sync()
+            raise ConnectionError(f"coordinator rejected offset commit: {resp}")
+        raise ConnectionError(f"offset commit failed: {resp}")
+
     async def close(self) -> None:
         if self._closed:
             return
+        if self._last_delivered is not None:
+            await self._mark_processed(self._last_delivered)
+            self._last_delivered = None
+        try:
+            await self._commit_dirty_offsets()
+        except Exception:
+            pass
         self._closed = True
         self._stop_event.set()
         for task in self._tasks:
