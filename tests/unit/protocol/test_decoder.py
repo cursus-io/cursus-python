@@ -16,6 +16,7 @@ from cursus.protocol.decoder import (
     is_offset_regression,
     is_stale_producer_epoch,
     is_stream_control_frame,
+    is_terminal_producer_error,
 )
 from cursus.protocol.encoder import encode_batch
 from cursus.types import Message
@@ -174,3 +175,5 @@ def test_commit_failure_classifiers():
     assert is_coordinator_failure("ERROR: group_not_found group=g1")
     assert is_coordinator_failure("ERROR: NOT_COORDINATOR host=127.0.0.1 port=9001")
     assert is_stale_producer_epoch("ERROR: stale_producer_epoch producer=p1")
+    assert is_terminal_producer_error("ERROR: idempotency_gap expected=3 actual=5")
+    assert is_terminal_producer_error("ERROR: first message for producer must use seqNum=1")

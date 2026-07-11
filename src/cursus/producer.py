@@ -8,7 +8,7 @@ from cursus.config import ProducerConfig
 from cursus.connection.sync_conn import SyncConnection
 from cursus.errors import ProducerClosedError, ProducerFencedError
 from cursus.protocol.command import CommandBuilder
-from cursus.protocol.decoder import decode_ack, is_stale_producer_epoch
+from cursus.protocol.decoder import decode_ack, is_terminal_producer_error
 from cursus.protocol.encoder import encode_batch, encode_message
 from cursus.types import Message
 
@@ -225,7 +225,7 @@ class Producer:
             with self._ack_lock:
                 self._unique_ack_count += len(batch)
             return
-        if ack.error and is_stale_producer_epoch(ack.error):
+        if ack.error and is_terminal_producer_error(ack.error):
             raise ProducerFencedError(ack.error)
 
     @property

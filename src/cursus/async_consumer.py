@@ -45,25 +45,32 @@ class AsyncConsumer:
         self._last_delivered: Message | None = None
         self._leader_addr: str | None = None
         self._coordinator_addr: str | None = None
+        self._partition_leaders: dict[int, str] = {}
 
-    async def _connect(self) -> AsyncConnection:
+    async def _connect(self, preferred: str | None = None) -> AsyncConnection:
         addrs = list(self._config.brokers)
-        if self._leader_addr:
+        if preferred:
+            addrs = [preferred] + [a for a in addrs if a != preferred]
+        elif self._leader_addr:
             addrs = [self._leader_addr] + [a for a in addrs if a != self._leader_addr]
 
         for addr in addrs:
             try:
                 conn = AsyncConnection(addr)
                 await conn.connect()
-                self._leader_addr = addr
+                if preferred is None:
+                    self._leader_addr = addr
                 return conn
             except ConnectionError:
                 continue
         raise ConnectionError(f"failed to connect to any broker: {self._config.brokers}")
 
+    async def _connect_to_partition_leader(self, partition: int) -> AsyncConnection:
+        return await self._connect(self._partition_leaders.get(partition))
+
     async def _send_command(self, cmd: str) -> str:
         for _attempt in range(3):
-            conn = await self._connect()
+            conn = await self._connect(self._coordinator_addr)
             try:
                 await conn.write_frame(encode_message("", cmd))
                 resp = (await conn.read_frame()).decode()
@@ -77,11 +84,22 @@ class AsyncConsumer:
                     elif part.startswith("port="):
                         port = part.split("=", 1)[1]
                 if host and port:
-                    self._leader_addr = f"{host}:{port}"
-                    self._coordinator_addr = self._leader_addr
+                    self._coordinator_addr = f"{host}:{port}"
                     continue
             return resp
         return resp
+
+    async def _fetch_metadata(self) -> None:
+        resp = await self._send_command(f"METADATA topic={self._config.topic}")
+        if not resp.startswith("OK"):
+            return
+        for part in resp.split():
+            if part.startswith("leaders="):
+                addrs = part.split("=", 1)[1].split(",")
+                for i, addr in enumerate(addrs):
+                    addr = addr.strip()
+                    if addr:
+                        self._partition_leaders[i] = addr
 
     async def _join_and_sync(self) -> None:
         group = self._config.group_id or "default-group"
@@ -123,6 +141,11 @@ class AsyncConsumer:
                 self._committed_offsets[pid] = offset
             except ValueError as exc:
                 raise ConnectionError(f"fetch offset failed: {resp}") from exc
+
+        try:
+            await self._fetch_metadata()
+        except Exception:
+            pass
 
     async def start(self) -> None:
         await self._join_and_sync()
@@ -201,10 +224,18 @@ class AsyncConsumer:
                         generation=self._generation,
                     )
 
-                conn = await self._connect()
+                conn = await self._connect_to_partition_leader(partition)
                 try:
                     await conn.write_frame(encode_message("", cmd))
                     resp_data = await conn.read_frame()
+                    resp_text = resp_data.decode("utf-8", errors="replace")
+                    if "NOT_LEADER LEADER_IS" in resp_text:
+                        parts = resp_text.split()
+                        for i, token in enumerate(parts):
+                            if token == "LEADER_IS" and i + 1 < len(parts):
+                                self._partition_leaders[partition] = parts[i + 1]
+                                break
+                        continue
                     resp_data = self._compression.decompress(
                         resp_data, self._config.compression_type
                     )

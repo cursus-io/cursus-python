@@ -38,3 +38,27 @@ def test_partition_for_key_distributes():
     for i in range(100):
         partitions_seen.add(p._partition_for_key(f"key-{i}"))
     assert len(partitions_seen) > 1
+
+
+def test_async_producer_uses_same_key_partitioning():
+    from cursus.async_producer import AsyncProducer
+    from cursus.config import ProducerConfig
+
+    cfg = ProducerConfig(topic="t", partitions=4)
+    sync = Producer.__new__(Producer)
+    sync._config = cfg
+    async_producer = AsyncProducer.__new__(AsyncProducer)
+    async_producer._config = cfg
+
+    assert async_producer._partition_for_key("order-123") == sync._partition_for_key("order-123")
+
+
+def test_async_producer_key_partition_is_deterministic():
+    from cursus.async_producer import AsyncProducer
+    from cursus.config import ProducerConfig
+
+    cfg = ProducerConfig(topic="t", partitions=8)
+    producer = AsyncProducer.__new__(AsyncProducer)
+    producer._config = cfg
+
+    assert producer._partition_for_key("order-9") == producer._partition_for_key("order-9")

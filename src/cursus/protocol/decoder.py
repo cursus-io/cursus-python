@@ -148,8 +148,22 @@ def is_coordinator_failure(response: str) -> bool:
     )
 
 
+def is_terminal_producer_error(response: str) -> bool:
+    resp = response.lower()
+    return any(
+        token in resp
+        for token in (
+            "stale_producer_epoch",
+            "idempotency_gap",
+            "first message",
+            "seqnum=1",
+            "seq_num=1",
+        )
+    )
+
+
 def is_stale_producer_epoch(response: str) -> bool:
-    return "stale_producer_epoch" in response
+    return is_terminal_producer_error(response)
 
 
 def is_offset_out_of_range(response: str) -> bool:
