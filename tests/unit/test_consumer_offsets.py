@@ -3,6 +3,7 @@ import pytest
 from cursus.config import ConsumerConfig
 from cursus.consumer import Consumer
 from cursus.errors import ConnectionError
+from cursus.protocol.encoder import encode_batch
 from cursus.types import AutoOffsetReset, Message, OffsetRange, StreamControl
 
 
@@ -308,5 +309,110 @@ def test_async_heartbeat_coordinator_failure_requests_rejoin():
 
         assert consumer._rejoin_event.is_set()
         assert sent == ["HEARTBEAT topic=orders group=workers member=member-1 generation=7"]
+
+    asyncio.run(scenario())
+
+
+class _FakeStreamConn:
+    def __init__(self, frames: list[bytes]) -> None:
+        self.frames = list(frames)
+        self.writes: list[bytes] = []
+        self.closed = False
+
+    def write_frame(self, data: bytes) -> None:
+        self.writes.append(data)
+
+    def read_frame(self) -> bytes:
+        if not self.frames:
+            raise RuntimeError("stream exhausted")
+        return self.frames.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeAsyncStreamConn:
+    def __init__(self, frames: list[bytes]) -> None:
+        self.frames = list(frames)
+        self.writes: list[bytes] = []
+        self.closed = False
+
+    async def write_frame(self, data: bytes) -> None:
+        self.writes.append(data)
+
+    async def read_frame(self) -> bytes:
+        if not self.frames:
+            raise RuntimeError("stream exhausted")
+        return self.frames.pop(0)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _stream_batch(offset: int, payload: str) -> bytes:
+    return encode_batch(
+        "orders",
+        0,
+        "1",
+        False,
+        [Message(offset=offset, seq_num=offset + 1, payload=payload, partition=0)],
+    )
+
+
+def test_sync_streaming_keeps_connection_for_multiple_frames():
+    consumer = make_consumer()
+    consumer._generation = 3
+    consumer._member_id = "member-1"
+    consumer._assignment_epoch = 1
+    consumer._offsets[0] = 5
+    conn = _FakeStreamConn(
+        [
+            b"",
+            _stream_batch(5, "a"),
+            _stream_batch(6, "b"),
+            b"STREAM_CONTROL type=CLOSE offset=7",
+        ]
+    )
+    consumer._connect_to_partition_leader = lambda _partition: conn  # type: ignore[method-assign]
+
+    consumer._stream_partition(0, consumer._assignment_epoch)
+
+    assert len(conn.writes) == 1
+    assert conn.closed
+    assert [msg.payload for msg in consumer._message_queue] == ["a", "b"]
+    assert consumer._offsets[0] == 7
+
+
+def test_async_streaming_keeps_connection_for_multiple_frames():
+    import asyncio
+
+    from cursus.async_consumer import AsyncConsumer
+
+    async def scenario() -> None:
+        consumer = AsyncConsumer(ConsumerConfig(topic="orders", group_id="workers"))
+        consumer._generation = 3
+        consumer._member_id = "member-1"
+        consumer._offsets[0] = 5
+        conn = _FakeAsyncStreamConn(
+            [
+                b"",
+                _stream_batch(5, "a"),
+                _stream_batch(6, "b"),
+                b"STREAM_CONTROL type=CLOSE offset=7",
+            ]
+        )
+
+        async def connect(_partition: int) -> _FakeAsyncStreamConn:
+            return conn
+
+        consumer._connect_to_partition_leader = connect  # type: ignore[method-assign]
+
+        await consumer._stream_partition(0)
+
+        assert len(conn.writes) == 1
+        assert conn.closed
+        assert [consumer._queue.get_nowait().payload for _ in range(2)] == ["a", "b"]
+        assert consumer._offsets[0] == 7
+        await consumer.close()
 
     asyncio.run(scenario())

@@ -364,93 +364,106 @@ class Consumer:
             t.join(timeout=1.0)
         self._partition_workers.clear()
 
-    def _partition_poll_loop(self, partition: int, epoch: int) -> None:
-        while (
+    def _partition_active(self, epoch: int) -> bool:
+        return (
             not self._done.is_set()
             and not self._rejoin_required.is_set()
             and epoch == self._assignment_epoch
-        ):
-            offset = self._offsets.get(partition, 0)
+        )
+
+    def _record_leader_redirect(self, partition: int, response: str) -> bool:
+        if "NOT_LEADER LEADER_IS" not in response:
+            return False
+        parts = response.split()
+        for i, part in enumerate(parts):
+            if part == "LEADER_IS" and i + 1 < len(parts):
+                self._partition_leaders[partition] = parts[i + 1]
+                break
+        return True
+
+    def _handle_partition_frame(self, partition: int, epoch: int, frame: bytes) -> bool:
+        resp_text = frame.decode("utf-8", errors="replace")
+        if self._record_leader_redirect(partition, resp_text):
+            return False
+
+        data = self._compression.decompress(frame, self._config.compression_type)
+        if len(data) == 0:
+            return True
+
+        if is_stream_control_frame(data):
+            control = decode_stream_control(data)
+            self._handle_stream_control(partition, control)
+            return control.type != "CLOSE"
+
+        try:
+            resp_str = data.decode()
+            if self._record_leader_redirect(partition, resp_str):
+                return False
+            if is_coordinator_failure(resp_str):
+                self._request_rejoin()
+                return False
+            if is_offset_out_of_range(resp_str):
+                self._offsets[partition] = self._resolve_offset_reset(
+                    decode_offset_out_of_range(resp_str)
+                )
+                return False
+        except UnicodeDecodeError:
+            pass
+
+        if len(data) > 2:
+            messages, _, _ = decode_batch(data)
+            if messages and self._partition_active(epoch):
+                with self._queue_cond:
+                    self._message_queue.extend(messages)
+                    self._queue_cond.notify()
+                self._offsets[partition] = messages[-1].offset + 1
+        return True
+
+    def _consume_partition_once(self, partition: int, epoch: int) -> None:
+        group = self._config.group_id or "default-group"
+        offset = self._offsets.get(partition, 0)
+        cmd = CommandBuilder.consume(
+            self._config.topic,
+            partition,
+            offset,
+            self._member_id,
+            group=group,
+            generation=self._generation,
+        )
+        conn = self._connect_to_partition_leader(partition)
+        try:
+            conn.write_frame(encode_message("", cmd))
+            self._handle_partition_frame(partition, epoch, conn.read_frame())
+        finally:
+            conn.close()
+
+    def _stream_partition(self, partition: int, epoch: int) -> None:
+        group = self._config.group_id or "default-group"
+        offset = self._offsets.get(partition, 0)
+        cmd = CommandBuilder.stream(
+            self._config.topic,
+            partition,
+            group,
+            self._member_id,
+            self._generation,
+            offset=offset,
+        )
+        conn = self._connect_to_partition_leader(partition)
+        try:
+            conn.write_frame(encode_message("", cmd))
+            while self._partition_active(epoch):
+                if not self._handle_partition_frame(partition, epoch, conn.read_frame()):
+                    return
+        finally:
+            conn.close()
+
+    def _partition_poll_loop(self, partition: int, epoch: int) -> None:
+        while self._partition_active(epoch):
             try:
-                group = self._config.group_id or "default-group"
                 if self._config.mode == ConsumerMode.STREAMING:
-                    cmd = CommandBuilder.stream(
-                        self._config.topic,
-                        partition,
-                        group,
-                        self._member_id,
-                        self._generation,
-                        offset=offset,
-                    )
+                    self._stream_partition(partition, epoch)
                 else:
-                    cmd = CommandBuilder.consume(
-                        self._config.topic,
-                        partition,
-                        offset,
-                        self._member_id,
-                        group=group,
-                        generation=self._generation,
-                    )
-
-                conn = self._connect_to_partition_leader(partition)
-                try:
-                    conn.write_frame(encode_message("", cmd))
-                    resp_data = conn.read_frame()
-
-                    resp_str = resp_data.decode("utf-8", errors="replace")
-                    if "NOT_LEADER LEADER_IS" in resp_str:
-                        parts = resp_str.split()
-                        for i, p in enumerate(parts):
-                            if p == "LEADER_IS" and i + 1 < len(parts):
-                                self._partition_leaders[partition] = parts[i + 1]
-                                break
-                        continue
-
-                    resp_data = self._compression.decompress(
-                        resp_data, self._config.compression_type
-                    )
-                    if len(resp_data) == 0:
-                        continue
-
-                    if len(resp_data) > 2:
-                        try:
-                            resp_str = resp_data.decode()
-                            if "NOT_LEADER LEADER_IS" in resp_str:
-                                parts = resp_str.split()
-                                for i, p in enumerate(parts):
-                                    if p == "LEADER_IS" and i + 1 < len(parts):
-                                        self._partition_leaders[partition] = parts[i + 1]
-                                        break
-                                continue
-                            if is_coordinator_failure(resp_str):
-                                self._request_rejoin()
-                                return
-                            if is_offset_out_of_range(resp_str):
-                                self._offsets[partition] = self._resolve_offset_reset(
-                                    decode_offset_out_of_range(resp_str)
-                                )
-                                continue
-                        except UnicodeDecodeError:
-                            pass
-
-                        if is_stream_control_frame(resp_data):
-                            control = decode_stream_control(resp_data)
-                            self._handle_stream_control(partition, control)
-                            continue
-
-                        messages, _, _ = decode_batch(resp_data)
-                        if (
-                            messages
-                            and not self._rejoin_required.is_set()
-                            and epoch == self._assignment_epoch
-                        ):
-                            with self._queue_cond:
-                                self._message_queue.extend(messages)
-                                self._queue_cond.notify()
-                            last = messages[-1]
-                            self._offsets[partition] = last.offset + 1
-                finally:
-                    conn.close()
+                    self._consume_partition_once(partition, epoch)
             except Exception:
                 pass
 

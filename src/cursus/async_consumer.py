@@ -207,73 +207,102 @@ class AsyncConsumer:
             backoff_s = 1.0
             self._start_partition_tasks()
 
-    async def _poll_loop(self, partition: int) -> None:
-        while not self._stop_event.is_set():
-            offset = self._offsets.get(partition, 0)
-            try:
-                group = self._config.group_id or "default-group"
-                if self._config.mode == ConsumerMode.STREAMING:
-                    cmd = CommandBuilder.stream(
-                        self._config.topic,
-                        partition,
-                        group,
-                        self._member_id,
-                        self._generation,
-                        offset=offset,
-                    )
-                else:
-                    cmd = CommandBuilder.consume(
-                        self._config.topic,
-                        partition,
-                        offset,
-                        self._member_id,
-                        group=group,
-                        generation=self._generation,
-                    )
+    def _partition_active(self) -> bool:
+        return not self._stop_event.is_set() and not self._rejoin_event.is_set()
 
-                conn = await self._connect_to_partition_leader(partition)
-                try:
-                    await conn.write_frame(encode_message("", cmd))
-                    resp_data = await conn.read_frame()
-                    resp_text = resp_data.decode("utf-8", errors="replace")
-                    if "NOT_LEADER LEADER_IS" in resp_text:
-                        parts = resp_text.split()
-                        for i, token in enumerate(parts):
-                            if token == "LEADER_IS" and i + 1 < len(parts):
-                                self._partition_leaders[partition] = parts[i + 1]
-                                break
-                        continue
-                    resp_data = self._compression.decompress(
-                        resp_data, self._config.compression_type
-                    )
-                    if len(resp_data) == 0:
-                        continue
-                    try:
-                        resp_str = resp_data.decode()
-                        if is_coordinator_failure(resp_str):
-                            self._request_rejoin()
-                            return
-                        if is_offset_out_of_range(resp_str):
-                            self._offsets[partition] = self._resolve_offset_reset(
-                                decode_offset_out_of_range(resp_str)
-                            )
-                            continue
-                    except UnicodeDecodeError:
-                        pass
-                    if is_stream_control_frame(resp_data):
-                        control = decode_stream_control(resp_data)
-                        self._handle_stream_control(partition, control)
-                        continue
-                    if len(resp_data) > 2:
-                        messages, _, _ = decode_batch(resp_data)
-                        if self._rejoin_event.is_set() or self._stop_event.is_set():
-                            return
-                        for msg in messages:
-                            await self._queue.put(msg)
-                        if messages:
-                            self._offsets[partition] = messages[-1].offset + 1
-                finally:
-                    await conn.close()
+    def _record_leader_redirect(self, partition: int, response: str) -> bool:
+        if "NOT_LEADER LEADER_IS" not in response:
+            return False
+        parts = response.split()
+        for i, token in enumerate(parts):
+            if token == "LEADER_IS" and i + 1 < len(parts):
+                self._partition_leaders[partition] = parts[i + 1]
+                break
+        return True
+
+    async def _handle_partition_frame(self, partition: int, frame: bytes) -> bool:
+        resp_text = frame.decode("utf-8", errors="replace")
+        if self._record_leader_redirect(partition, resp_text):
+            return False
+
+        data = self._compression.decompress(frame, self._config.compression_type)
+        if len(data) == 0:
+            return True
+
+        if is_stream_control_frame(data):
+            control = decode_stream_control(data)
+            self._handle_stream_control(partition, control)
+            return control.type != "CLOSE"
+
+        try:
+            resp_str = data.decode()
+            if self._record_leader_redirect(partition, resp_str):
+                return False
+            if is_coordinator_failure(resp_str):
+                self._request_rejoin()
+                return False
+            if is_offset_out_of_range(resp_str):
+                self._offsets[partition] = self._resolve_offset_reset(
+                    decode_offset_out_of_range(resp_str)
+                )
+                return False
+        except UnicodeDecodeError:
+            pass
+
+        if len(data) > 2:
+            messages, _, _ = decode_batch(data)
+            if self._partition_active():
+                for msg in messages:
+                    await self._queue.put(msg)
+                if messages:
+                    self._offsets[partition] = messages[-1].offset + 1
+        return True
+
+    async def _consume_partition_once(self, partition: int) -> None:
+        group = self._config.group_id or "default-group"
+        offset = self._offsets.get(partition, 0)
+        cmd = CommandBuilder.consume(
+            self._config.topic,
+            partition,
+            offset,
+            self._member_id,
+            group=group,
+            generation=self._generation,
+        )
+        conn = await self._connect_to_partition_leader(partition)
+        try:
+            await conn.write_frame(encode_message("", cmd))
+            await self._handle_partition_frame(partition, await conn.read_frame())
+        finally:
+            await conn.close()
+
+    async def _stream_partition(self, partition: int) -> None:
+        group = self._config.group_id or "default-group"
+        offset = self._offsets.get(partition, 0)
+        cmd = CommandBuilder.stream(
+            self._config.topic,
+            partition,
+            group,
+            self._member_id,
+            self._generation,
+            offset=offset,
+        )
+        conn = await self._connect_to_partition_leader(partition)
+        try:
+            await conn.write_frame(encode_message("", cmd))
+            while self._partition_active():
+                if not await self._handle_partition_frame(partition, await conn.read_frame()):
+                    return
+        finally:
+            await conn.close()
+
+    async def _poll_loop(self, partition: int) -> None:
+        while self._partition_active():
+            try:
+                if self._config.mode == ConsumerMode.STREAMING:
+                    await self._stream_partition(partition)
+                else:
+                    await self._consume_partition_once(partition)
             except Exception:
                 pass
 
