@@ -98,7 +98,6 @@ def test_offset_regression_commit_does_not_rewind_local_state():
     assert consumer._committed_offsets[2] == 50
 
 
-
 def test_batch_commit_success_advances_multiple_partitions():
     consumer = make_consumer(commit_batch_size=2)
     sent: list[str] = []
@@ -117,6 +116,5 @@ def test_batch_commit_success_advances_multiple_partitions():
     assert consumer._committed_offsets[0] == 11
     assert consumer._committed_offsets[1] == 21
     assert sent == [
-        "BATCH_COMMIT topic=orders group=workers generation=7 "
-        "member=member-1 0:11,1:21"
+        "BATCH_COMMIT topic=orders group=workers generation=7 member=member-1 0:11,1:21"
     ]

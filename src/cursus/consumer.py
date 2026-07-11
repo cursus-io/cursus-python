@@ -377,7 +377,6 @@ class Consumer:
 
             self._done.wait(timeout=0.5)
 
-
     def _resolve_offset_reset(self, offset_range: OffsetRange) -> int:
         policy = self._config.auto_offset_reset
         if policy == AutoOffsetReset.EARLIEST:
@@ -414,7 +413,6 @@ class Consumer:
         self._dirty_count += 1
         if self._dirty_count >= self._config.commit_batch_size:
             self._commit_dirty_offsets()
-
 
     def _start_commit_loop(self) -> None:
         t = threading.Thread(target=self._commit_loop, daemon=True)

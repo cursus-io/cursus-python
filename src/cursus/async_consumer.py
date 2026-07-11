@@ -196,7 +196,6 @@ class AsyncConsumer:
                 continue
         raise StopAsyncIteration
 
-
     def _resolve_offset_reset(self, offset_range: OffsetRange) -> int:
         policy = self._config.auto_offset_reset
         if policy == AutoOffsetReset.EARLIEST:
@@ -233,7 +232,6 @@ class AsyncConsumer:
         self._dirty_count += 1
         if self._dirty_count >= self._config.commit_batch_size:
             await self._commit_dirty_offsets()
-
 
     async def _commit_loop(self) -> None:
         while not self._stop_event.is_set():

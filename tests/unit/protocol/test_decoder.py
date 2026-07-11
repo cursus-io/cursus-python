@@ -135,7 +135,6 @@ def test_strict_response_decoders_reject_legacy_values():
         decode_snapshot_response('{"version":1,"payload":"x"}')
 
 
-
 def test_decode_offset_out_of_range_response():
     resp = "ERROR: OFFSET_OUT_OF_RANGE requested=3 earliest=10 latest=20"
     offset_range = decode_offset_out_of_range(resp)
