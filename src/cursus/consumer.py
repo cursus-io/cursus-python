@@ -30,9 +30,16 @@ class Consumer:
         self._close_lock = threading.Lock()
         self._done = threading.Event()
         self._message_queue: list[Message] = []
-        self._queue_lock = threading.Lock()
+        self._queue_lock = threading.RLock()
         self._queue_cond = threading.Condition(self._queue_lock)
         self._workers: list[threading.Thread] = []
+        self._partition_workers: list[threading.Thread] = []
+        self._heartbeat_started = False
+        self._commit_loop_started = False
+        self._metadata_refresh_started = False
+        self._rejoin_required = threading.Event()
+        self._assignment_epoch = 0
+        self._last_delivered: Message | None = None
 
         self._generation: int = 0
         self._member_id: str = config.consumer_id or ""
@@ -46,46 +53,58 @@ class Consumer:
         self._coordinator_addr: str | None = None
 
     def start(self, handler: Callable[[Message], None]) -> None:
-        self._join_and_sync()
-        self._start_heartbeat()
-        self._start_commit_loop()
-        self._start_partition_workers()
+        self._start_background_loops()
+        self._restart_assignment()
 
         while not self._done.is_set():
             with self._queue_cond:
-                while len(self._message_queue) == 0 and not self._done.is_set():
+                while (
+                    len(self._message_queue) == 0
+                    and not self._done.is_set()
+                    and not self._rejoin_required.is_set()
+                ):
                     self._queue_cond.wait(timeout=1.0)
+                if self._rejoin_required.is_set():
+                    self._restart_assignment()
+                    continue
                 if self._done.is_set() and len(self._message_queue) == 0:
                     break
                 msgs = list(self._message_queue)
                 self._message_queue.clear()
 
             for msg in msgs:
-                if self._done.is_set():
+                if self._done.is_set() or self._rejoin_required.is_set():
                     break
                 handler(msg)
                 self._mark_processed(msg)
 
     def __iter__(self) -> Iterator[Message]:
-        self._join_and_sync()
-        self._start_heartbeat()
-        self._start_commit_loop()
-        self._start_partition_workers()
+        self._start_background_loops()
+        self._restart_assignment()
 
         while not self._done.is_set():
             with self._queue_cond:
-                while len(self._message_queue) == 0 and not self._done.is_set():
+                while (
+                    len(self._message_queue) == 0
+                    and not self._done.is_set()
+                    and not self._rejoin_required.is_set()
+                ):
                     self._queue_cond.wait(timeout=1.0)
+                if self._rejoin_required.is_set():
+                    self._restart_assignment()
+                    continue
                 if self._done.is_set() and len(self._message_queue) == 0:
                     return
                 msgs = list(self._message_queue)
                 self._message_queue.clear()
 
             for msg in msgs:
-                if self._done.is_set():
+                if self._done.is_set() or self._rejoin_required.is_set():
                     return
+                self._last_delivered = msg
                 yield msg
                 self._mark_processed(msg)
+                self._last_delivered = None
 
     def _connect_to_leader(self) -> SyncConnection:
         addrs = list(self._config.brokers)
@@ -182,6 +201,31 @@ class Consumer:
             return conn
         except ConnectionError:
             return self._connect_to_leader()
+
+    def _start_background_loops(self) -> None:
+        if not self._heartbeat_started:
+            self._start_heartbeat()
+            self._heartbeat_started = True
+        if not self._commit_loop_started:
+            self._start_commit_loop()
+            self._commit_loop_started = True
+        if not self._metadata_refresh_started:
+            self._start_metadata_refresh()
+            self._metadata_refresh_started = True
+
+    def _request_rejoin(self) -> None:
+        self._rejoin_required.set()
+        with self._queue_cond:
+            self._queue_cond.notify_all()
+
+    def _restart_assignment(self) -> None:
+        self._stop_partition_workers()
+        with self._queue_cond:
+            self._message_queue.clear()
+        self._rejoin_required.clear()
+        self._assignment_epoch += 1
+        self._join_and_sync()
+        self._start_partition_workers()
 
     def _join_and_sync(self) -> None:
         try:
@@ -287,14 +331,24 @@ class Consumer:
                 pass
 
     def _start_partition_workers(self) -> None:
-        self._start_metadata_refresh()
+        epoch = self._assignment_epoch
         for pid in self._assignments:
-            t = threading.Thread(target=self._partition_poll_loop, args=(pid,), daemon=True)
+            t = threading.Thread(target=self._partition_poll_loop, args=(pid, epoch), daemon=True)
             t.start()
+            self._partition_workers.append(t)
             self._workers.append(t)
 
-    def _partition_poll_loop(self, partition: int) -> None:
-        while not self._done.is_set():
+    def _stop_partition_workers(self) -> None:
+        for t in self._partition_workers:
+            t.join(timeout=1.0)
+        self._partition_workers.clear()
+
+    def _partition_poll_loop(self, partition: int, epoch: int) -> None:
+        while (
+            not self._done.is_set()
+            and not self._rejoin_required.is_set()
+            and epoch == self._assignment_epoch
+        ):
             offset = self._offsets.get(partition, 0)
             try:
                 group = self._config.group_id or "default-group"
@@ -348,8 +402,8 @@ class Consumer:
                                         break
                                 continue
                             if is_coordinator_failure(resp_str):
-                                self._join_and_sync()
-                                continue
+                                self._request_rejoin()
+                                return
                             if is_offset_out_of_range(resp_str):
                                 self._offsets[partition] = self._resolve_offset_reset(
                                     decode_offset_out_of_range(resp_str)
@@ -465,7 +519,7 @@ class Consumer:
         if is_offset_regression(resp):
             raise ConnectionError(f"offset commit rejected: {resp}")
         if is_coordinator_failure(resp):
-            self._join_and_sync()
+            self._request_rejoin()
             raise ConnectionError(f"coordinator rejected offset commit: {resp}")
         raise ConnectionError(f"offset commit failed: {resp}")
 
@@ -474,6 +528,13 @@ class Consumer:
             if self._closed:
                 return
             self._closed = True
+
+        if self._last_delivered is not None:
+            try:
+                self._mark_processed(self._last_delivered)
+            except Exception:
+                pass
+            self._last_delivered = None
 
         self._done.set()
         with self._queue_cond:

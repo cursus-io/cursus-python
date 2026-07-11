@@ -31,6 +31,10 @@ class AsyncConsumer:
         self._stop_event = asyncio.Event()
         self._queue: asyncio.Queue[Message] = asyncio.Queue()
         self._tasks: list[asyncio.Task[None]] = []
+        self._partition_tasks: list[asyncio.Task[None]] = []
+        self._commit_task: asyncio.Task[None] | None = None
+        self._rejoin_task: asyncio.Task[None] | None = None
+        self._rejoin_event = asyncio.Event()
         self._generation = 0
         self._member_id = config.consumer_id or ""
         self._assignments: list[int] = []
@@ -110,7 +114,6 @@ class AsyncConsumer:
                 parts = sync_resp[start:end].replace(",", " ").split()
                 self._assignments = [int(p.strip()) for p in parts if p.strip().isdigit()]
 
-        self._tasks.append(asyncio.create_task(self._commit_loop()))
         for pid in self._assignments:
             try:
                 fetch_cmd = CommandBuilder.fetch_offset(self._config.topic, pid, group)
@@ -123,9 +126,53 @@ class AsyncConsumer:
 
     async def start(self) -> None:
         await self._join_and_sync()
+        self._ensure_commit_loop()
+        self._start_partition_tasks()
+        if self._rejoin_task is None or self._rejoin_task.done():
+            self._rejoin_task = asyncio.create_task(self._rejoin_loop())
+            self._tasks.append(self._rejoin_task)
+
+    def _ensure_commit_loop(self) -> None:
+        if self._commit_task is None or self._commit_task.done():
+            self._commit_task = asyncio.create_task(self._commit_loop())
+            self._tasks.append(self._commit_task)
+
+    def _start_partition_tasks(self) -> None:
         for pid in self._assignments:
             task = asyncio.create_task(self._poll_loop(pid))
+            self._partition_tasks.append(task)
             self._tasks.append(task)
+
+    async def _stop_partition_tasks(self) -> None:
+        tasks = list(self._partition_tasks)
+        self._partition_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    def _request_rejoin(self) -> None:
+        self._rejoin_event.set()
+
+    async def _rejoin_loop(self) -> None:
+        while not self._stop_event.is_set():
+            await self._rejoin_event.wait()
+            if self._stop_event.is_set():
+                return
+            self._rejoin_event.clear()
+            await self._stop_partition_tasks()
+            while not self._queue.empty():
+                self._queue.get_nowait()
+            try:
+                await self._join_and_sync()
+            except Exception:
+                await asyncio.sleep(1.0)
+                self._rejoin_event.set()
+                continue
+            self._start_partition_tasks()
 
     async def _poll_loop(self, partition: int) -> None:
         while not self._stop_event.is_set():
@@ -163,8 +210,8 @@ class AsyncConsumer:
                     try:
                         resp_str = resp_data.decode()
                         if is_coordinator_failure(resp_str):
-                            await self._join_and_sync()
-                            continue
+                            self._request_rejoin()
+                            return
                         if is_offset_out_of_range(resp_str):
                             self._offsets[partition] = self._resolve_offset_reset(
                                 decode_offset_out_of_range(resp_str)
@@ -294,7 +341,7 @@ class AsyncConsumer:
         if is_offset_regression(resp):
             raise ConnectionError(f"offset commit rejected: {resp}")
         if is_coordinator_failure(resp):
-            await self._join_and_sync()
+            self._request_rejoin()
             raise ConnectionError(f"coordinator rejected offset commit: {resp}")
         raise ConnectionError(f"offset commit failed: {resp}")
 
@@ -310,6 +357,7 @@ class AsyncConsumer:
             pass
         self._closed = True
         self._stop_event.set()
+        self._rejoin_event.set()
         for task in self._tasks:
             task.cancel()
             try:

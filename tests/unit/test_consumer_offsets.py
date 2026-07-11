@@ -117,3 +117,83 @@ def test_batch_commit_success_advances_multiple_partitions():
     assert sent == [
         "BATCH_COMMIT topic=orders group=workers member=member-1 generation=7 P0:11,P1:21"
     ]
+
+
+def test_coordinator_commit_failure_requests_rejoin_without_inline_join():
+    consumer = make_consumer()
+    consumer._generation = 7
+    consumer._member_id = "member-1"
+    consumer._send_coordinator_command = (  # type: ignore[method-assign]
+        lambda _cmd: "ERROR: GEN_MISMATCH expected=8 actual=7"
+    )
+
+    def fail_join() -> None:
+        raise AssertionError("commit path must not rejoin inline")
+
+    consumer._join_and_sync = fail_join  # type: ignore[method-assign]
+
+    with pytest.raises(ConnectionError, match="coordinator rejected offset commit"):
+        consumer._commit_offsets({0: 11})
+
+    assert consumer._rejoin_required.is_set()
+
+
+def test_background_loops_start_once_across_rejoins():
+    consumer = make_consumer()
+    counts = {"heartbeat": 0, "commit": 0, "metadata": 0}
+
+    def heartbeat() -> None:
+        counts["heartbeat"] += 1
+
+    def commit() -> None:
+        counts["commit"] += 1
+
+    def metadata() -> None:
+        counts["metadata"] += 1
+
+    consumer._start_heartbeat = heartbeat  # type: ignore[method-assign]
+    consumer._start_commit_loop = commit  # type: ignore[method-assign]
+    consumer._start_metadata_refresh = metadata  # type: ignore[method-assign]
+
+    consumer._start_background_loops()
+    consumer._start_background_loops()
+
+    assert counts == {"heartbeat": 1, "commit": 1, "metadata": 1}
+
+
+def test_close_marks_last_delivered_iterator_message():
+    consumer = make_consumer()
+    consumer._generation = 7
+    consumer._member_id = "member-1"
+    sent: list[str] = []
+
+    def fake_send(cmd: str) -> str:
+        sent.append(cmd)
+        return "OK"
+
+    consumer._send_coordinator_command = fake_send  # type: ignore[method-assign]
+    consumer._last_delivered = Message(offset=12, seq_num=1, payload="ok", partition=0)
+
+    consumer.close()
+
+    assert consumer._committed_offsets[0] == 13
+    assert sent[0] == (
+        "COMMIT_OFFSET topic=orders partition=0 group=workers "
+        "offset=13 generation=7 member=member-1"
+    )
+
+
+def test_async_commit_loop_is_singleton():
+    import asyncio
+
+    from cursus.async_consumer import AsyncConsumer
+
+    async def scenario() -> None:
+        consumer = AsyncConsumer(ConsumerConfig(topic="orders", group_id="workers"))
+        consumer._ensure_commit_loop()
+        first = consumer._commit_task
+        consumer._ensure_commit_loop()
+        assert consumer._commit_task is first
+        await consumer.close()
+
+    asyncio.run(scenario())
