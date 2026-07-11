@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from cursus.types import Acks, ConsumerMode
+from cursus.types import Acks, AutoOffsetReset, ConsumerMode
 
 
 def _default_brokers() -> list[str]:
@@ -40,6 +40,7 @@ class ConsumerConfig:
     group_id: str | None = None
     consumer_id: str = field(default_factory=_generate_consumer_id)
     mode: ConsumerMode = ConsumerMode.STREAMING
+    auto_offset_reset: AutoOffsetReset = AutoOffsetReset.EARLIEST
     auto_commit_interval_s: float = 5.0
     session_timeout_ms: int = 30000
     heartbeat_interval_ms: int = 3000

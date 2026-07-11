@@ -1,5 +1,5 @@
 from cursus.config import ConsumerConfig, ProducerConfig
-from cursus.types import Acks, ConsumerMode
+from cursus.types import Acks, AutoOffsetReset, ConsumerMode
 
 
 def test_producer_config_defaults():
@@ -44,6 +44,7 @@ def test_consumer_config_defaults():
     assert cfg.group_id is None
     assert cfg.consumer_id is not None
     assert cfg.mode == ConsumerMode.STREAMING
+    assert cfg.auto_offset_reset == AutoOffsetReset.EARLIEST
     assert cfg.auto_commit_interval_s == 5.0
     assert cfg.session_timeout_ms == 30000
     assert cfg.heartbeat_interval_ms == 3000

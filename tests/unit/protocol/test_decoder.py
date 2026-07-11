@@ -6,9 +6,17 @@ from cursus.errors import ProtocolError
 from cursus.protocol.decoder import (
     decode_ack,
     decode_batch,
+    decode_offset_out_of_range,
     decode_offset_response,
     decode_snapshot_response,
+    decode_stream_control,
     decode_version_response,
+    is_coordinator_failure,
+    is_offset_out_of_range,
+    is_offset_regression,
+    is_stale_producer_epoch,
+    is_stream_control_frame,
+    is_terminal_producer_error,
 )
 from cursus.protocol.encoder import encode_batch
 from cursus.types import Message
@@ -127,3 +135,50 @@ def test_strict_response_decoders_reject_legacy_values():
         decode_snapshot_response("NULL")
     with pytest.raises(ValueError, match="unexpected snapshot response"):
         decode_snapshot_response('{"version":1,"payload":"x"}')
+
+
+def test_decode_offset_out_of_range_response():
+    resp = "ERROR: OFFSET_OUT_OF_RANGE requested=3 earliest=10 latest=20"
+    offset_range = decode_offset_out_of_range(resp)
+
+    assert is_offset_out_of_range(resp)
+    assert offset_range.requested == 3
+    assert offset_range.earliest == 10
+    assert offset_range.latest == 20
+
+
+def test_decode_stream_control_offset_out_of_range():
+    frame = (
+        b"STREAM_CONTROL type=CLOSE reason=offset_out_of_range "
+        b"offset=3 requested=3 earliest=10 latest=20"
+    )
+    control = decode_stream_control(frame)
+
+    assert is_stream_control_frame(frame)
+    assert control.type == "CLOSE"
+    assert control.reason == "offset_out_of_range"
+    assert control.offset == 3
+    assert control.requested == 3
+    assert control.earliest == 10
+    assert control.latest == 20
+
+
+def test_zero_length_frame_is_not_stream_control():
+    assert not is_stream_control_frame(b"")
+
+
+def test_commit_failure_classifiers():
+    assert is_offset_regression("ERROR: offset_regression current=10 attempted=9")
+    assert is_coordinator_failure("ERROR: GEN_MISMATCH expected=2 actual=1")
+    assert is_coordinator_failure("ERROR: NOT_OWNER partition=0")
+    assert is_coordinator_failure("ERROR: member_not_found member=m1")
+    assert is_coordinator_failure("ERROR: group_not_found group=g1")
+    assert is_coordinator_failure("ERROR: NOT_COORDINATOR host=127.0.0.1 port=9001")
+    assert is_stale_producer_epoch("ERROR: stale_producer_epoch producer=p1")
+    assert is_terminal_producer_error("ERROR: idempotency_gap expected=3 actual=5")
+    assert is_terminal_producer_error(
+        'ERROR: broker_error reason="idempotency gap expected 3 actual 5"'
+    )
+    assert is_terminal_producer_error('ERROR: broker_error reason="idempotency error"')
+    assert is_terminal_producer_error("ERROR: stale producer epoch producer=p1")
+    assert is_terminal_producer_error("ERROR: first message for producer must use seqNum=1")

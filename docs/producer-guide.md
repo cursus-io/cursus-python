@@ -101,13 +101,17 @@ Snappy and LZ4 require extras: `pip install cursus-client[snappy,lz4]`
 
 ## Idempotency
 
+When `idempotent=True`, the producer sends a producer id, producer epoch, and per-partition sequence numbers. The broker uses those fields to deduplicate retried batches and fence stale producer epochs. This is idempotent producer writes, not Kafka transaction-level exactly-once semantics across producer and consumer processing.
+
 ```python
 config = ProducerConfig(
-    topic="exactly-once",
+    topic="payments",
     idempotent=True,
     max_inflight_requests=1,
 )
 ```
+
+For a new `(producer_id, epoch)` session, sequence numbers start at 1 and advance independently per partition. If the broker returns `stale_producer_epoch`, `idempotency_gap`, `idempotency gap`, `idempotency error`, or a first-message sequence error, the SDK treats the producer session as terminal rather than retrying it as a normal transient publish failure.
 
 ## Retry
 

@@ -13,6 +13,12 @@ class ConsumerMode(str, Enum):
     STREAMING = "streaming"
 
 
+class AutoOffsetReset(str, Enum):
+    EARLIEST = "earliest"
+    LATEST = "latest"
+    ERROR = "error"
+
+
 @dataclass
 class Message:
     offset: int
@@ -25,6 +31,7 @@ class Message:
     schema_version: int = 0
     aggregate_version: int = 0
     metadata: str = ""
+    partition: int = 0
 
 
 @dataclass
@@ -37,6 +44,23 @@ class AckResponse:
     seq_end: int
     leader: str = ""
     error: str = ""
+
+
+@dataclass(frozen=True)
+class OffsetRange:
+    requested: int
+    earliest: int
+    latest: int
+
+
+@dataclass(frozen=True)
+class StreamControl:
+    type: str
+    reason: str = ""
+    offset: int | None = None
+    requested: int | None = None
+    earliest: int | None = None
+    latest: int | None = None
 
 
 @dataclass

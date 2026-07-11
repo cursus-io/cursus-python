@@ -78,8 +78,11 @@ sequenceDiagram
     C->>Broker: JOIN_GROUP command
     Broker-->>C: partition assignment
     C-->>Con: SYNC_GROUP response
+    Con->>Broker: FETCH_OFFSET for each assigned partition
+    Broker-->>Con: OK offset=nextOffset
     loop heartbeat
-        Con->>Broker: HEARTBEAT
+        Con->>Broker: HEARTBEAT topic=T group=G member=M generation=N
+        Broker-->>Con: OK or coordinator failure
     end
     Con->>C: STREAM or CONSUME command
     C->>Broker: subscribe
@@ -87,8 +90,8 @@ sequenceDiagram
         Broker-->>C: batch frame
         C-->>W: decode_batch
         W->>App: yield Message
-        App->>Con: (auto) commit offset
-        Con->>Broker: COMMIT_OFFSET / BATCH_COMMIT
+        App->>Con: handler/iterator body returns
+        Con->>Broker: COMMIT_OFFSET / BATCH_COMMIT nextOffset
     end
     App->>Con: close()
     Con->>Broker: LEAVE_GROUP

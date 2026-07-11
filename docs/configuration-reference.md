@@ -12,7 +12,7 @@
 | `buffer_size` | `int` | `10000` | Max buffered messages per partition |
 | `linger_ms` | `int` | `100` | Batch flush delay (ms) |
 | `max_inflight_requests` | `int` | `5` | Concurrent in-flight sends |
-| `idempotent` | `bool` | `False` | Enable deduplication |
+| `idempotent` | `bool` | `False` | Enable broker deduplication and producer epoch fencing for idempotent writes |
 | `write_timeout_ms` | `int` | `5000` | Broker response timeout |
 | `flush_timeout_ms` | `int` | `30000` | `flush()` timeout |
 | `leader_staleness_ms` | `int` | `30000` | Leader cache TTL |
@@ -31,12 +31,13 @@
 | `group_id` | `str \| None` | `None` | Consumer group ID |
 | `consumer_id` | `str` | auto-generated | Consumer identifier |
 | `mode` | `ConsumerMode` | `STREAMING` | `POLLING` or `STREAMING` |
-| `auto_commit_interval_s` | `float` | `5.0` | Offset commit interval (seconds) |
+| `auto_offset_reset` | `AutoOffsetReset` | `EARLIEST` | Retention gap policy: `earliest`, `latest`, or `error` |
+| `auto_commit_interval_s` | `float` | `5.0` | Interval for committing the next offset to read (seconds) |
 | `session_timeout_ms` | `int` | `30000` | Session timeout |
 | `heartbeat_interval_ms` | `int` | `3000` | Heartbeat interval |
 | `max_poll_records` | `int` | `100` | Max records per poll |
 | `batch_size` | `int` | `100` | Batch hint size |
-| `immediate_commit` | `bool` | `False` | Commit after each message |
+| `immediate_commit` | `bool` | `False` | Commit `lastProcessedOffset + 1` after each successfully delivered message |
 | `commit_batch_size` | `int` | `100` | Commit batch threshold |
 | `compression_type` | `str` | `"none"` | Compression algorithm |
 | `tls_cert_path` | `str \| None` | `None` | TLS certificate |

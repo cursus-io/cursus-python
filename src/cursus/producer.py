@@ -6,9 +6,9 @@ from typing_extensions import Self
 from cursus.compression.registry import CompressionRegistry
 from cursus.config import ProducerConfig
 from cursus.connection.sync_conn import SyncConnection
-from cursus.errors import ProducerClosedError
+from cursus.errors import ConnectionError, ProducerClosedError, ProducerFencedError
 from cursus.protocol.command import CommandBuilder
-from cursus.protocol.decoder import decode_ack
+from cursus.protocol.decoder import decode_ack, is_terminal_producer_error
 from cursus.protocol.encoder import encode_batch, encode_message
 from cursus.types import Message
 
@@ -43,6 +43,8 @@ class Producer:
         self._buffers = [_PartitionBuffer() for _ in range(config.partitions)]
         self._senders: list[threading.Thread] = []
         self._partition_leaders: dict[int, str] = {}
+        self._producer_id = f"py-{id(self):x}"
+        self._producer_epoch = int(time.time())
 
         self._create_topic()
         try:
@@ -126,8 +128,8 @@ class Producer:
             seq_num=seq,
             payload=payload,
             key=key,
-            producer_id=f"py-{id(self):x}",
-            epoch=int(time.time()),
+            producer_id=self._producer_id,
+            epoch=self._producer_epoch,
         )
 
         with buf.cond:
@@ -185,6 +187,10 @@ class Producer:
                     self._send_batch(conn, part, batch)
                     sent = True
                     break
+                except ProducerFencedError:
+                    self._done.set()
+                    sent = True
+                    break
                 except Exception:
                     if conn is not None:
                         conn.close()
@@ -220,6 +226,11 @@ class Producer:
         if ack.status == "OK":
             with self._ack_lock:
                 self._unique_ack_count += len(batch)
+            return
+        if ack.error and is_terminal_producer_error(ack.error):
+            raise ProducerFencedError(ack.error)
+        error = ack.error or f"broker returned status={ack.status}"
+        raise ConnectionError(f"broker rejected batch for partition {partition}: {error}")
 
     @property
     def unique_ack_count(self) -> int:

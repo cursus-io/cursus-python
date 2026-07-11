@@ -4,7 +4,7 @@ Python client library for the [Cursus](https://github.com/cursus-io/cursus) mess
 
 ## Features
 
-- **Producer** — Partition batching, compression, idempotent delivery
+- **Producer** — Partition batching, compression, idempotent writes
 - **Consumer** — Polling and streaming modes, consumer groups with rebalance handling
 - **EventStore** — Event sourcing with optimistic concurrency, snapshots
 - **Sync + Async** — Both `Producer` and `AsyncProducer` (and Consumer, EventStore)

@@ -77,13 +77,13 @@ sequenceDiagram
     CO-->>C: OK generation=1 member=M-1234 assignments=[0,1]
 
     C->>CO: FETCH_OFFSET topic=T partition=0 group=G
-    CO-->>C: 0
+    CO-->>C: OK offset=42
 
     C->>B: METADATA topic=T
     B-->>C: OK leaders=H1:P1,H2:P2
 
     loop Poll Loop
-        C->>PL: CONSUME topic=T partition=0 offset=0 member=M-1234 group=G generation=1
+        C->>PL: CONSUME topic=T partition=0 offset=42 member=M-1234 group=G generation=1
         PL-->>C: batch(messages)
     end
 
@@ -121,4 +121,4 @@ flowchart TD
 - `_send_coordinator_command(cmd)` — coordinator로 전송, NOT_COORDINATOR 시 3회 재시도
 - `_fetch_metadata()` — `METADATA topic=<topic>` → `_partition_leaders` dict 업데이트
 - `_connect_to_partition_leader(partition)` — 파티션별 리더 주소로 연결
-- `_partition_poll_loop` — NOT_LEADER 응답 시 `_partition_leaders[partition]` 업데이트
+- `_partition_poll_loop` — `FETCH_OFFSET` 이후 broker-reported next offset으로 `CONSUME` / `STREAM` 수행, NOT_LEADER 응답 시 `_partition_leaders[partition]` 업데이트
