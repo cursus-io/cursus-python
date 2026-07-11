@@ -245,6 +245,7 @@ def test_partition_workers_are_not_added_to_background_workers():
     assert len(consumer._partition_workers) == 2
     assert consumer._workers == []
 
+
 def test_heartbeat_coordinator_failure_requests_rejoin():
     consumer = make_consumer()
     consumer._generation = 7
