@@ -22,6 +22,7 @@ class AsyncProducer:
         self._seq_counters = [0] * config.partitions
         self._rr = 0
         self._unique_ack_count = 0
+        self._in_flight = [0] * config.partitions
         self._buffers: list[list[Message]] = [[] for _ in range(config.partitions)]
         self._tasks: list[asyncio.Task[None]] = []
         self._partition_leaders: dict[int, str] = {}
@@ -137,6 +138,7 @@ class AsyncProducer:
             n = min(len(self._buffers[part]), self._config.batch_size)
             batch = self._buffers[part][:n]
             self._buffers[part] = self._buffers[part][n:]
+            self._in_flight[part] += 1
 
             if conn is None:
                 try:
@@ -144,6 +146,7 @@ class AsyncProducer:
                 except Exception:
                     conn = None
                     self._buffers[part] = batch + self._buffers[part]
+                    self._in_flight[part] -= 1
                     self._events[part].set()
                     await asyncio.sleep(min(self._config.max_backoff_ms / 1000.0, 0.1))
                     continue
@@ -169,10 +172,12 @@ class AsyncProducer:
                     await conn.close()
                     conn = None
                     self._buffers[part] = batch + self._buffers[part]
+                    self._in_flight[part] -= 1
                     continue
                 ack = decode_ack(resp_data)
                 if ack.status == "OK":
                     self._unique_ack_count += len(batch)
+                    self._in_flight[part] -= 1
                 elif ack.error and is_terminal_producer_error(ack.error):
                     self._closed = True
                     self._stop_event.set()
@@ -184,6 +189,7 @@ class AsyncProducer:
                 if conn is not None:
                     await conn.close()
                     conn = None
+                self._in_flight[part] -= 1
                 continue
             except Exception:
                 if conn is not None:
@@ -191,6 +197,8 @@ class AsyncProducer:
                     conn = None
                 if batch:
                     self._buffers[part] = batch + self._buffers[part]
+                self._in_flight[part] -= 1
+                if batch:
                     self._events[part].set()
                     await asyncio.sleep(min(self._config.max_backoff_ms / 1000.0, 0.1))
 
@@ -207,7 +215,9 @@ class AsyncProducer:
         timeout_s = self._config.flush_timeout_ms / 1000.0
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            if all(len(buf) == 0 for buf in self._buffers):
+            if all(len(buf) == 0 for buf in self._buffers) and all(
+                count == 0 for count in self._in_flight
+            ):
                 return
             await asyncio.sleep(0.01)
 

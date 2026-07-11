@@ -151,3 +151,24 @@ def test_async_producer_uses_fixed_epoch_for_session_messages():
         assert [msg.seq_num for msg in producer._buffers[0]] == [1, 2]
 
     asyncio.run(scenario())
+
+
+def test_async_producer_flush_waits_for_in_flight_ack():
+    from cursus.async_producer import AsyncProducer
+    from cursus.config import ProducerConfig
+
+    async def scenario() -> None:
+        producer = AsyncProducer.__new__(AsyncProducer)
+        producer._config = ProducerConfig(topic="t", partitions=1, flush_timeout_ms=500)
+        producer._buffers = [[]]
+        producer._in_flight = [1]
+        producer._events = [asyncio.Event()]
+
+        flush_task = asyncio.create_task(producer.flush())
+        await asyncio.sleep(0.05)
+        assert not flush_task.done()
+
+        producer._in_flight[0] = 0
+        await asyncio.wait_for(flush_task, timeout=0.2)
+
+    asyncio.run(scenario())
