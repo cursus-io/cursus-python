@@ -1,4 +1,4 @@
-# Consumer Guide
+﻿# Consumer Guide
 
 ## Basic Usage — Iterator (recommended)
 
@@ -139,7 +139,7 @@ async with AsyncConsumer(config) as consumer:
 
 ### Delivery semantics
 
-For at-least-once processing, process the message first and commit `lastProcessedOffset + 1` only after the handler succeeds. Committing before processing is possible for at-most-once workflows, but a crash after the commit can skip unprocessed records. Cursus does not yet provide Kafka transaction-level exactly-once semantics.
+For at-least-once processing, process the message first and commit `lastProcessedOffset + 1` only after the handler succeeds. Committing before processing is possible for at-most-once workflows, but a crash after the commit can skip unprocessed records. Cursus transaction support is broker-scoped and does not make external side effects atomic.
 
 In iterator style, the SDK marks a yielded message as processed when the loop advances to the next item. If the application breaks immediately after handling a message, `close()` marks the last delivered message before flushing dirty offsets.
 
@@ -148,3 +148,34 @@ If the broker returns `ERROR: offset_regression ...`, the SDK treats the commit 
 Streaming consumers recognize UTF-8 `STREAM_CONTROL` frames before binary batch decoding. `STREAM_CONTROL type=CLOSE reason=offset_out_of_range ...` applies the same `auto_offset_reset` policy as pull `ERROR: OFFSET_OUT_OF_RANGE ...`; zero-length stream frames are keepalives.
 
 External DB offset stores should be treated as legacy fallback or migration aids; broker committed offsets are the default source of truth.
+
+
+## Read Isolation and Transactional Processing
+
+Consumers resume from the broker committed `nextOffset` after assignment and rejoin. After processing record offset `N`, commit `N + 1`. Processing first and then committing gives at-least-once delivery. Committing before processing can give at-most-once behavior if the process crashes after the commit.
+
+```python
+from cursus import ConsumerConfig, IsolationLevel
+
+config = ConsumerConfig(
+    topic="input",
+    group_id="workers",
+    isolation_level=IsolationLevel.READ_COMMITTED,
+)
+```
+
+`READ_COMMITTED` asks the broker to hide aborted transaction records and stop before unresolved open transaction records. Non-transactional records remain visible under both isolation levels. `READ_UNCOMMITTED` preserves the previous default behavior.
+
+For consume-process-produce flows, publish output records and send consumed offsets in one transaction:
+
+```python
+tx.send_offsets_to_transaction(
+    topic="input",
+    group="workers",
+    member=member_id,
+    generation=generation,
+    offsets={partition: last_processed_offset + 1},
+)
+```
+
+Migration path: keep existing consumers on `READ_UNCOMMITTED`, deploy producers with transactions, then move consumers that require committed-only visibility to `READ_COMMITTED` after the broker version supports transaction markers.

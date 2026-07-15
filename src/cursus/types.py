@@ -19,6 +19,11 @@ class AutoOffsetReset(str, Enum):
     ERROR = "error"
 
 
+class IsolationLevel(str, Enum):
+    READ_UNCOMMITTED = "read_uncommitted"
+    READ_COMMITTED = "read_committed"
+
+
 @dataclass
 class Message:
     offset: int
@@ -51,6 +56,30 @@ class OffsetRange:
     requested: int
     earliest: int
     latest: int
+
+
+@dataclass(frozen=True)
+class PartitionOffsetRange:
+    partition: int
+    earliest: int
+    latest: int
+    leo: int
+    hwm: int
+
+
+@dataclass(frozen=True)
+class ProducerSession:
+    transactional_id: str
+    producer_id: str
+    epoch: int
+
+
+@dataclass(frozen=True)
+class TransactionStatus:
+    transactional_id: str
+    state: str
+    messages: int = 0
+    offsets: int = 0
 
 
 @dataclass(frozen=True)

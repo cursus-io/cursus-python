@@ -1,4 +1,4 @@
-# Producer Guide
+﻿# Producer Guide
 
 ## Basic Usage
 
@@ -101,7 +101,7 @@ Snappy and LZ4 require extras: `pip install cursus-client[snappy,lz4]`
 
 ## Idempotency
 
-When `idempotent=True`, the producer sends a producer id, producer epoch, and per-partition sequence numbers. The broker uses those fields to deduplicate retried batches and fence stale producer epochs. This is idempotent producer writes, not Kafka transaction-level exactly-once semantics across producer and consumer processing.
+When `idempotent=True`, the producer sends a producer id, producer epoch, and per-partition sequence numbers. The broker uses those fields to deduplicate retried batches and fence stale producer epochs. This is idempotent producer writes, not a full external side-effect exactly-once guarantee.
 
 ```python
 config = ProducerConfig(
@@ -141,3 +141,40 @@ async with AsyncProducer(ProducerConfig(topic="my-topic")) as p:
 ## Shutdown
 
 `close()` (or exiting the context manager) signals all sender threads to stop, waits for them to finish, and closes connections. Always close the producer to avoid message loss.
+
+
+## Broker-Managed Transactions
+
+`TransactionalProducer` stages produced records and consumed offsets in the broker transaction coordinator. The producer identity is allocated by `INIT_PRODUCER_ID` and kept on the client across reconnects.
+
+```python
+from cursus import TransactionalProducer
+
+tx = TransactionalProducer("billing-worker", ["localhost:9000"])
+
+with tx.transaction():
+    tx.publish("billing-output", "processed", partition=-1)
+    tx.send_offsets_to_transaction(
+        topic="billing-input",
+        group="billing-workers",
+        member="member-1",
+        generation=7,
+        offsets={0: 42, 2: 13},
+    )
+```
+
+Wire examples:
+
+```text
+INIT_PRODUCER_ID transactional_id=billing-worker
+BEGIN_TXN transactional_id=billing-worker producerId=<producer-id> epoch=<N>
+TXN_PUBLISH transactional_id=billing-worker topic=billing-output partition=-1 producerId=<producer-id> seqNum=1 epoch=<N> message=processed
+SEND_OFFSETS_TO_TXN transactional_id=billing-worker producerId=<producer-id> epoch=<N> topic=billing-input group=billing-workers member=member-1 generation=7 P0:42,P2:13
+END_TXN transactional_id=billing-worker producerId=<producer-id> epoch=<N> result=commit
+```
+
+Offsets passed to `send_offsets_to_transaction()` are sorted by partition before the command is emitted. Use `partition=-1` to let the broker choose the target partition from the topic routing policy.
+
+If an exception leaves `with tx.transaction():`, the SDK sends `END_TXN ... result=abort`. Retrying commit or abort with the same producer epoch relies on the broker's idempotent finalization contract. Fencing, validation, authentication, and authorization errors are returned as typed SDK exceptions and are not retried as transient publish failures.
+
+A successful broker transaction atomically applies staged records and staged consumer offsets inside the broker. It does not make calls to databases, HTTP APIs, or other external systems atomic; external side effects must still be idempotent or guarded by an application-level workflow.

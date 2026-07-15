@@ -109,3 +109,64 @@ def test_stream_version():
     assert CommandBuilder.stream_version("events", "order-1") == (
         "STREAM_VERSION topic=events key=order-1"
     )
+
+
+def test_consume_with_isolation_and_auth():
+    result = CommandBuilder.consume(
+        "orders",
+        0,
+        100,
+        "m1",
+        group="grp",
+        generation=3,
+        isolation_level="read_committed",
+        principal="alice",
+        auth_token="secret",
+    )
+    assert result == (
+        "CONSUME topic=orders partition=0 offset=100 member=m1 group=grp generation=3 "
+        "isolation_level=read_committed principal=alice auth_token=secret"
+    )
+
+
+def test_list_offsets_commands():
+    assert CommandBuilder.list_offsets("orders") == "LIST_OFFSETS topic=orders"
+    assert CommandBuilder.list_offsets("orders", 1) == "LIST_OFFSETS topic=orders partition=1"
+    assert CommandBuilder.list_offsets("orders", principal="alice", auth_token="secret") == (
+        "LIST_OFFSETS topic=orders principal=alice auth_token=secret"
+    )
+
+
+def test_transaction_commands_exact_wire():
+    assert CommandBuilder.find_coordinator(transactional_id="tx-1") == (
+        "FIND_COORDINATOR transactional_id=tx-1"
+    )
+    assert CommandBuilder.init_producer_id("tx-1") == "INIT_PRODUCER_ID transactional_id=tx-1"
+    assert CommandBuilder.begin_txn("tx-1", "p1", 2) == (
+        "BEGIN_TXN transactional_id=tx-1 producerId=p1 epoch=2"
+    )
+    assert CommandBuilder.txn_publish(
+        "tx-1",
+        "out",
+        -1,
+        "p1",
+        3,
+        2,
+        "processed",
+        key="k1",
+        principal="alice",
+        auth_token="secret",
+    ) == (
+        "TXN_PUBLISH transactional_id=tx-1 topic=out partition=-1 producerId=p1 "
+        "seqNum=3 epoch=2 key=k1 message=processed principal=alice auth_token=secret"
+    )
+    assert CommandBuilder.send_offsets_to_txn(
+        "tx-1", "p1", 2, "input", "grp", "m1", 4, {2: 202, 0: 101}
+    ) == (
+        "SEND_OFFSETS_TO_TXN transactional_id=tx-1 producerId=p1 epoch=2 topic=input "
+        "group=grp member=m1 generation=4 P0:101,P2:202"
+    )
+    assert CommandBuilder.end_txn("tx-1", "p1", 2, commit=False) == (
+        "END_TXN transactional_id=tx-1 producerId=p1 epoch=2 result=abort"
+    )
+    assert CommandBuilder.txn_status("tx-1") == "TXN_STATUS transactional_id=tx-1"

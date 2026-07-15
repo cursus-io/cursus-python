@@ -1,8 +1,23 @@
 import json
 import struct
 
-from cursus.errors import ProtocolError
-from cursus.types import AckResponse, Message, OffsetRange, StreamControl
+from cursus.errors import (
+    AuthenticationRequiredError,
+    AuthorizationDeniedError,
+    BrokerError,
+    ProducerFencedError,
+    ProtocolError,
+    ValidationError,
+)
+from cursus.types import (
+    AckResponse,
+    Message,
+    OffsetRange,
+    PartitionOffsetRange,
+    ProducerSession,
+    StreamControl,
+    TransactionStatus,
+)
 
 BATCH_MAGIC = 0xBA7C
 
@@ -75,6 +90,9 @@ def decode_batch(data: bytes) -> tuple[list[Message], str, int]:
         aggregate_version = r.read_uint64()
         metadata = r.read_str(r.read_uint16())
 
+        if payload == "__cursus_txn_control_marker__":
+            continue
+
         messages.append(
             Message(
                 offset=offset,
@@ -94,9 +112,18 @@ def decode_batch(data: bytes) -> tuple[list[Message], str, int]:
     return messages, topic, partition
 
 
+def is_ok_response(response: str) -> bool:
+    resp = response.strip()
+    return resp == "OK" or resp.startswith("OK ")
+
+
+def is_error_response(response: str) -> bool:
+    return response.strip().startswith("ERROR:")
+
+
 def decode_ok_fields(response: str) -> dict[str, str]:
     resp = response.strip()
-    if not resp.startswith("OK"):
+    if not is_ok_response(resp):
         return {}
     return _decode_fields(resp.split()[1:])
 
@@ -106,46 +133,142 @@ def _decode_fields(parts: list[str]) -> dict[str, str]:
     for part in parts:
         key, sep, value = part.partition("=")
         if sep:
-            fields[key] = value
+            fields[key] = value.strip('"')
     return fields
 
 
 def decode_error_fields(response: str) -> dict[str, str]:
     resp = response.strip()
-    if not resp.startswith("ERROR:"):
+    if not is_error_response(resp):
         return {}
-    return _decode_fields(resp.split()[1:])
+    return _decode_fields(resp.split()[2:])
+
+
+def decode_error_code(response: str) -> str:
+    resp = response.strip()
+    if not is_error_response(resp):
+        return ""
+    parts = resp.split(maxsplit=2)
+    return parts[1] if len(parts) > 1 else ""
+
+
+def error_from_response(response: str) -> BrokerError:
+    code = decode_error_code(response)
+    fields = decode_error_fields(response)
+    lower = response.lower()
+    if code in {"AUTHENTICATION_REQUIRED", "authentication_required"}:
+        return AuthenticationRequiredError(code, fields, response)
+    if code in {"NOT_AUTHORIZED_FOR_TOPIC", "authorization_denied", "AUTHORIZATION_DENIED"}:
+        return AuthorizationDeniedError(code, fields, response)
+    if "producer_fenced" in lower or "stale_producer_epoch" in lower:
+        return ProducerFencedError(code or "producer_fenced", fields, response)
+    if code.startswith("invalid_") or code.startswith("missing_"):
+        return ValidationError(code, fields, response)
+    return BrokerError(code, fields, response)
+
+
+def require_ok(response: str, *, operation: str = "command") -> dict[str, str]:
+    resp = response.strip()
+    if is_error_response(resp):
+        raise error_from_response(resp)
+    if not is_ok_response(resp):
+        raise ProtocolError(f"unexpected {operation} response: {resp}")
+    return decode_ok_fields(resp)
+
+
+def decode_not_coordinator(response: str) -> str | None:
+    if decode_error_code(response) != "NOT_COORDINATOR":
+        return None
+    fields = decode_error_fields(response)
+    host = fields.get("host")
+    port = fields.get("port")
+    if not host or not port:
+        return None
+    return f"{host}:{port}"
 
 
 def decode_offset_response(response: str) -> int:
-    resp = response.strip()
-    if resp.startswith("ERROR:"):
-        raise ValueError(f"broker error: {resp}")
-
-    fields = decode_ok_fields(resp)
-    if not fields:
-        raise ValueError(f"unexpected offset response: {resp}")
+    try:
+        fields = require_ok(response, operation="offset")
+    except ProtocolError as exc:
+        raise ValueError(f"unexpected offset response: {response.strip()}") from exc
     if "offset" not in fields:
-        raise ValueError(f"missing offset in response: {resp}")
+        raise ValueError(f"missing offset in response: {response.strip()}")
     return int(fields["offset"])
 
 
+def decode_list_offsets_response(response: str) -> list[PartitionOffsetRange]:
+    fields = require_ok(response, operation="list offsets")
+    offsets = fields.get("offsets")
+    if offsets is None:
+        raise ValueError(f"missing offsets in response: {response.strip()}")
+
+    result: list[PartitionOffsetRange] = []
+    for entry in offsets.split(","):
+        if not entry:
+            continue
+        parts = entry.split(":")
+        if len(parts) != 5 or not parts[0].startswith("P"):
+            raise ValueError(f"malformed partition offset entry: {entry}")
+        partition = int(parts[0][1:])
+        values: dict[str, int] = {}
+        for item in parts[1:]:
+            key, sep, value = item.partition("=")
+            if not sep:
+                raise ValueError(f"malformed partition offset field: {entry}")
+            values[key] = int(value)
+        missing = {"earliest", "latest", "leo", "hwm"} - values.keys()
+        if missing:
+            raise ValueError(f"missing offset fields {sorted(missing)} in response: {response}")
+        result.append(
+            PartitionOffsetRange(
+                partition=partition,
+                earliest=values["earliest"],
+                latest=values["latest"],
+                leo=values["leo"],
+                hwm=values["hwm"],
+            )
+        )
+    return result
+
+
+def decode_producer_session(response: str) -> ProducerSession:
+    fields = require_ok(response, operation="producer session")
+    transactional_id = fields.get("transactional_id", "")
+    producer_id = fields.get("producerId") or fields.get("producer_id") or ""
+    epoch = fields.get("epoch", "")
+    if not transactional_id or not producer_id or not epoch:
+        raise ValueError(f"malformed producer session response: {response.strip()}")
+    return ProducerSession(transactional_id, producer_id, int(epoch))
+
+
+def decode_transaction_status(response: str) -> TransactionStatus:
+    fields = require_ok(response, operation="transaction status")
+    transactional_id = fields.get("transactional_id", "")
+    state = fields.get("state", "")
+    if not transactional_id or not state:
+        raise ValueError(f"malformed transaction status response: {response.strip()}")
+    return TransactionStatus(
+        transactional_id=transactional_id,
+        state=state,
+        messages=int(fields.get("messages", 0)),
+        offsets=int(fields.get("offsets", 0)),
+    )
+
+
 def is_offset_regression(response: str) -> bool:
-    return response.strip().startswith("ERROR: offset_regression")
+    code = decode_error_code(response)
+    return code == "offset_regression" or "offset regression" in response.lower()
 
 
 def is_coordinator_failure(response: str) -> bool:
-    resp = response.strip()
-    return any(
-        token in resp
-        for token in (
-            "GEN_MISMATCH",
-            "NOT_OWNER",
-            "member_not_found",
-            "group_not_found",
-            "NOT_COORDINATOR",
-        )
-    )
+    return decode_error_code(response) in {
+        "GEN_MISMATCH",
+        "NOT_OWNER",
+        "member_not_found",
+        "group_not_found",
+        "NOT_COORDINATOR",
+    }
 
 
 def is_terminal_producer_error(response: str) -> bool:
@@ -153,6 +276,7 @@ def is_terminal_producer_error(response: str) -> bool:
     return any(
         token in resp
         for token in (
+            "producer_fenced",
             "stale_producer_epoch",
             "stale producer epoch",
             "idempotency_gap",
@@ -171,7 +295,7 @@ def is_stale_producer_epoch(response: str) -> bool:
 
 
 def is_offset_out_of_range(response: str) -> bool:
-    return response.strip().startswith("ERROR: OFFSET_OUT_OF_RANGE")
+    return decode_error_code(response) == "OFFSET_OUT_OF_RANGE"
 
 
 def decode_offset_out_of_range(response: str) -> OffsetRange:
@@ -212,22 +336,21 @@ def decode_stream_control(data: bytes | str) -> StreamControl:
 
 
 def decode_version_response(response: str) -> int:
-    resp = response.strip()
-    if resp.startswith("ERROR:"):
-        raise ValueError(f"broker error: {resp}")
-
-    fields = decode_ok_fields(resp)
-    if not fields:
-        raise ValueError(f"unexpected version response: {resp}")
+    try:
+        fields = require_ok(response, operation="version")
+    except ProtocolError as exc:
+        raise ValueError(f"unexpected version response: {response.strip()}") from exc
     if "version" not in fields:
-        raise ValueError(f"missing version in response: {resp}")
+        raise ValueError(f"missing version in response: {response.strip()}")
     return int(fields["version"])
 
 
 def decode_snapshot_response(response: str) -> str | None:
     resp = response.strip()
-    if resp.startswith("ERROR:"):
-        raise ValueError(f"broker error: {resp}")
+    try:
+        require_ok(resp, operation="snapshot")
+    except ProtocolError as exc:
+        raise ValueError(f"unexpected snapshot response: {resp}") from exc
     if resp == "OK snapshot=null":
         return None
     if resp.startswith("OK snapshot="):

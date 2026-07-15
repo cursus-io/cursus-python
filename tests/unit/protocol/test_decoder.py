@@ -2,15 +2,21 @@ import json
 
 import pytest
 
-from cursus.errors import ProtocolError
+from cursus.errors import AuthorizationDeniedError, ProducerFencedError, ProtocolError
 from cursus.protocol.decoder import (
     decode_ack,
     decode_batch,
+    decode_error_code,
+    decode_list_offsets_response,
+    decode_not_coordinator,
     decode_offset_out_of_range,
     decode_offset_response,
+    decode_producer_session,
     decode_snapshot_response,
     decode_stream_control,
+    decode_transaction_status,
     decode_version_response,
+    error_from_response,
     is_coordinator_failure,
     is_offset_out_of_range,
     is_offset_regression,
@@ -182,3 +188,62 @@ def test_commit_failure_classifiers():
     assert is_terminal_producer_error('ERROR: broker_error reason="idempotency error"')
     assert is_terminal_producer_error("ERROR: stale producer epoch producer=p1")
     assert is_terminal_producer_error("ERROR: first message for producer must use seqNum=1")
+
+
+def test_decode_list_offsets_response():
+    resp = (
+        "OK topic=orders partitions=2 "
+        "offsets=P0:earliest=0:latest=11:leo=12:hwm=11,P1:earliest=5:latest=21:leo=22:hwm=21"
+    )
+    offsets = decode_list_offsets_response(resp)
+
+    assert offsets[0].partition == 0
+    assert offsets[0].earliest == 0
+    assert offsets[0].latest == 11
+    assert offsets[0].leo == 12
+    assert offsets[0].hwm == 11
+    assert offsets[1].partition == 1
+
+
+def test_decode_list_offsets_rejects_malformed_success_and_errors():
+    with pytest.raises(ProtocolError, match="unexpected list offsets response"):
+        decode_list_offsets_response("OKAY offsets=P0:earliest=0:latest=1:leo=1:hwm=1")
+    with pytest.raises(ValueError, match="missing offsets"):
+        decode_list_offsets_response("OK topic=orders partitions=1")
+    with pytest.raises(ValueError, match="malformed partition offset entry"):
+        decode_list_offsets_response("OK topic=orders partitions=1 offsets=0:earliest=0:latest=1")
+
+
+def test_structured_error_mapping():
+    response = "ERROR: NOT_AUTHORIZED_FOR_TOPIC topic=orders operation=write"
+    err = error_from_response(response)
+
+    assert isinstance(err, AuthorizationDeniedError)
+    assert err.code == "NOT_AUTHORIZED_FOR_TOPIC"
+    assert err.topic == "orders"
+    assert err.operation == "write"
+    assert decode_error_code(response) == "NOT_AUTHORIZED_FOR_TOPIC"
+    assert decode_not_coordinator("ERROR: NOT_COORDINATOR host=127.0.0.1 port=9002") == (
+        "127.0.0.1:9002"
+    )
+
+
+def test_producer_fencing_error_mapping():
+    err = error_from_response(
+        "ERROR: producer_fenced transactional_id=tx current_epoch=2 requested_epoch=1"
+    )
+    assert isinstance(err, ProducerFencedError)
+
+
+def test_decode_transaction_responses():
+    session = decode_producer_session("OK transactional_id=tx producerId=p1 epoch=3")
+    assert session.transactional_id == "tx"
+    assert session.producer_id == "p1"
+    assert session.epoch == 3
+
+    status = decode_transaction_status(
+        "OK transactional_id=tx state=committed messages=2 offsets=1"
+    )
+    assert status.state == "committed"
+    assert status.messages == 2
+    assert status.offsets == 1
