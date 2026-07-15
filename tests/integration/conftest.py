@@ -1,6 +1,8 @@
+import os
+
 import pytest
 
-BROKER_ADDR = "localhost:10000"
+BROKER_ADDR = os.environ.get("CURSUS_TEST_BROKER_ADDR", "localhost:10000")
 
 
 @pytest.fixture

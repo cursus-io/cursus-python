@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from cursus.types import Acks, AutoOffsetReset, ConsumerMode
+from cursus.types import Acks, AutoOffsetReset, ConsumerMode, IsolationLevel
 
 
 def _default_brokers() -> list[str]:
@@ -29,6 +29,9 @@ class ProducerConfig:
     compression_type: str = "none"
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
+    principal: str | None = None
+    auth_token: str | None = None
+    command_timeout_ms: int = 5000
     max_retries: int = 3
     max_backoff_ms: int = 10000
 
@@ -41,6 +44,7 @@ class ConsumerConfig:
     consumer_id: str = field(default_factory=_generate_consumer_id)
     mode: ConsumerMode = ConsumerMode.STREAMING
     auto_offset_reset: AutoOffsetReset = AutoOffsetReset.EARLIEST
+    isolation_level: IsolationLevel = IsolationLevel.READ_UNCOMMITTED
     auto_commit_interval_s: float = 5.0
     session_timeout_ms: int = 30000
     heartbeat_interval_ms: int = 3000
@@ -51,6 +55,9 @@ class ConsumerConfig:
     compression_type: str = "none"
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
+    principal: str | None = None
+    auth_token: str | None = None
+    command_timeout_ms: int = 5000
     metadata_refresh_interval_ms: int = 30000
     max_retries: int = 3
     max_backoff_ms: int = 10000

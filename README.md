@@ -1,4 +1,4 @@
-# Cursus Python Client
+﻿# Cursus Python Client
 
 Python client library for the [Cursus](https://github.com/cursus-io/cursus) message broker with sync and async support.
 
@@ -6,7 +6,7 @@ Python client library for the [Cursus](https://github.com/cursus-io/cursus) mess
 
 - **Producer** — Partition batching, compression, idempotent writes
 - **Consumer** — Polling and streaming modes, consumer groups with rebalance handling
-- **EventStore** — Event sourcing with optimistic concurrency, snapshots
+- **EventStore** — Event sourcing with optimistic concurrency, snapshots`r`n- **Transactions** — Broker-managed staged records plus consumed offsets
 - **Sync + Async** — Both `Producer` and `AsyncProducer` (and Consumer, EventStore)
 
 ## Requirements
@@ -119,3 +119,25 @@ pip install cursus-client[lz4]       # LZ4 compression
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
+
+## Transactions and Offset Discovery
+
+```python
+from cursus import OffsetClient, TransactionalProducer
+
+ranges = OffsetClient(["localhost:9000"]).list_offsets("input", partition=0)
+print(ranges[0].latest)  # next readable committed offset
+
+tx = TransactionalProducer("orders-worker", ["localhost:9000"])
+with tx.transaction():
+    tx.publish("output", "processed", partition=-1)
+    tx.send_offsets_to_transaction(
+        topic="input",
+        group="workers",
+        member="member-1",
+        generation=3,
+        offsets={0: 101},  # nextOffset = lastProcessedOffset + 1
+    )
+```
+
+Use `ConsumerConfig(isolation_level=IsolationLevel.READ_COMMITTED)` to read only records made visible by broker transaction markers. `READ_UNCOMMITTED` keeps the existing behavior.

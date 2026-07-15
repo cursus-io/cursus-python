@@ -1,4 +1,4 @@
-# Protocol
+﻿# Protocol
 
 Wire protocol between the Python client and Cursus broker. Mirrors the Go SDK's `protocol.go`.
 
@@ -36,6 +36,13 @@ packet-beta
 | `COMMIT_OFFSET` | `COMMIT_OFFSET topic=<t> partition=<p> group=<g> offset=<o> generation=<n> member=<m>` |
 | `BATCH_COMMIT` | `BATCH_COMMIT topic=<t> group=<g> member=<m> generation=<n> P<partition>:<nextOffset>,...` |
 | `FETCH_OFFSET` | `FETCH_OFFSET topic=<t> partition=<p> group=<g>` |
+| `LIST_OFFSETS` | `LIST_OFFSETS topic=<t> [partition=<p>]` |
+| `INIT_PRODUCER_ID` | `INIT_PRODUCER_ID transactional_id=<id>` |
+| `BEGIN_TXN` | `BEGIN_TXN transactional_id=<id> producerId=<id> epoch=<n>` |
+| `TXN_PUBLISH` | `TXN_PUBLISH transactional_id=<id> topic=<t> partition=<p|-1> producerId=<id> seqNum=<n> epoch=<n> [key=<k>] message=<payload>` |
+| `SEND_OFFSETS_TO_TXN` | `SEND_OFFSETS_TO_TXN transactional_id=<id> producerId=<id> epoch=<n> topic=<t> group=<g> member=<m> generation=<n> P<partition>:<nextOffset>,...` |
+| `END_TXN` | `END_TXN transactional_id=<id> producerId=<id> epoch=<n> result=<commit|abort>` |
+| `TXN_STATUS` | `TXN_STATUS transactional_id=<id>` |
 
 
 ## Consumer Offset Contract
@@ -116,3 +123,28 @@ flowchart TD
   "error": ""
 }
 ```
+
+## Offset Discovery
+
+`LIST_OFFSETS` returns broker-retained ranges:
+
+```text
+OK topic=orders partitions=2 offsets=P0:earliest=0:latest=11:leo=12:hwm=11,P1:earliest=5:latest=21:leo=22:hwm=21
+```
+
+`latest` is the next readable committed offset, not the last record offset. Use it for `auto_offset_reset=latest` decisions.
+
+## Transactions
+
+Transaction commands are routed to the transaction coordinator selected by `FIND_COORDINATOR transactional_id=<id>`. If the broker returns `ERROR: NOT_COORDINATOR host=<host> port=<port>`, the SDK retries the same command against that address with a bounded retry count.
+
+Successful transaction commit applies staged records and staged consumer offsets in the broker. Abort discards staged records and offsets. Offset regression during commit fails the transaction commit and does not update local committed offset state.
+
+Inline authentication uses fields that the broker accepts on applicable commands:
+
+```text
+LIST_OFFSETS topic=orders principal=alice auth_token=secret
+TXN_PUBLISH transactional_id=tx topic=orders partition=-1 producerId=p seqNum=1 epoch=0 message=x principal=alice auth_token=secret
+```
+
+Authentication and authorization failures are exposed as typed SDK exceptions.

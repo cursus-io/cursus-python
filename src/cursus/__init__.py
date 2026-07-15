@@ -8,6 +8,9 @@ from cursus.async_producer import AsyncProducer
 from cursus.config import ConsumerConfig, ProducerConfig
 from cursus.consumer import Consumer
 from cursus.errors import (
+    AuthenticationRequiredError,
+    AuthorizationDeniedError,
+    BrokerError,
     ConnectionError,
     ConsumerClosedError,
     CursusError,
@@ -18,7 +21,9 @@ from cursus.errors import (
     TopicNotFoundError,
 )
 from cursus.eventstore import EventStore
+from cursus.offsets import OffsetClient
 from cursus.producer import Producer
+from cursus.transaction import TransactionalProducer
 from cursus.types import (
     AckResponse,
     Acks,
@@ -26,10 +31,14 @@ from cursus.types import (
     AutoOffsetReset,
     ConsumerMode,
     Event,
+    IsolationLevel,
     Message,
+    PartitionOffsetRange,
+    ProducerSession,
     Snapshot,
     StreamData,
     StreamEvent,
+    TransactionStatus,
 )
 
 __all__ = [
@@ -38,7 +47,11 @@ __all__ = [
     "Acks",
     "ConsumerMode",
     "AutoOffsetReset",
+    "IsolationLevel",
     "Message",
+    "PartitionOffsetRange",
+    "ProducerSession",
+    "TransactionStatus",
     "AckResponse",
     "Event",
     "StreamEvent",
@@ -46,6 +59,9 @@ __all__ = [
     "StreamData",
     "AppendResult",
     "CursusError",
+    "BrokerError",
+    "AuthenticationRequiredError",
+    "AuthorizationDeniedError",
     "ConnectionError",
     "ProtocolError",
     "ProducerClosedError",
@@ -56,6 +72,8 @@ __all__ = [
     "Producer",
     "Consumer",
     "EventStore",
+    "OffsetClient",
+    "TransactionalProducer",
     "AsyncProducer",
     "AsyncConsumer",
     "AsyncEventStore",

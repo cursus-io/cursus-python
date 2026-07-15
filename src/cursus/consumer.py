@@ -435,6 +435,9 @@ class Consumer:
             self._member_id,
             group=group,
             generation=self._generation,
+            isolation_level=self._config.isolation_level.value,
+            principal=self._config.principal,
+            auth_token=self._config.auth_token,
         )
         conn = self._connect_to_partition_leader(partition)
         try:
@@ -453,6 +456,9 @@ class Consumer:
             self._member_id,
             self._generation,
             offset=offset,
+            isolation_level=self._config.isolation_level.value,
+            principal=self._config.principal,
+            auth_token=self._config.auth_token,
         )
         conn = self._connect_to_partition_leader(partition)
         try:
