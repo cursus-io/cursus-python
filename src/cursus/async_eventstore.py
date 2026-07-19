@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import TracebackType
 
@@ -17,6 +18,7 @@ class AsyncEventStore:
         self._topic = topic
         self._producer_id = producer_id
         self._conn: AsyncConnection | None = None
+        self._request_lock = asyncio.Lock()
 
     async def _get_conn(self) -> AsyncConnection:
         if self._conn is not None:
@@ -32,6 +34,10 @@ class AsyncEventStore:
             self._conn = None
 
     async def _send_command(self, cmd: str) -> str:
+        async with self._request_lock:
+            return await self._send_command_locked(cmd)
+
+    async def _send_command_locked(self, cmd: str) -> str:
         conn = await self._get_conn()
         try:
             await conn.write_frame(encode_message("", cmd))
@@ -88,6 +94,10 @@ class AsyncEventStore:
         )
 
     async def read_stream(self, key: str, from_version: int = 0) -> StreamData:
+        async with self._request_lock:
+            return await self._read_stream_locked(key, from_version)
+
+    async def _read_stream_locked(self, key: str, from_version: int) -> StreamData:
         cmd = CommandBuilder.read_stream(self._topic, key, from_version=from_version)
         conn = await self._get_conn()
         try:
@@ -154,7 +164,8 @@ class AsyncEventStore:
             raise ConnectionError(f"broker: {resp}") from exc
 
     async def close(self) -> None:
-        await self._reset_conn()
+        async with self._request_lock:
+            await self._reset_conn()
 
     async def __aenter__(self) -> Self:
         return self

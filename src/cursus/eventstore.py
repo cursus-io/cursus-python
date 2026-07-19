@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 
 from typing_extensions import Self
@@ -20,6 +21,7 @@ class EventStore:
         self._topic = topic
         self._producer_id = producer_id
         self._conn: SyncConnection | None = None
+        self._request_lock = threading.Lock()
 
     def _get_conn(self) -> SyncConnection:
         if self._conn is not None:
@@ -65,6 +67,16 @@ class EventStore:
             raise
 
     def _send_command(self, cmd: str, *, retries: int = 5, retry_topic_errors: bool = False) -> str:
+        with self._request_lock:
+            return self._send_command_locked(
+                cmd,
+                retries=retries,
+                retry_topic_errors=retry_topic_errors,
+            )
+
+    def _send_command_locked(
+        self, cmd: str, *, retries: int, retry_topic_errors: bool
+    ) -> str:
         last_resp = ""
         for attempt in range(retries + 1):
             resp = self._send_command_once(cmd)
@@ -132,6 +144,10 @@ class EventStore:
         )
 
     def read_stream(self, key: str, from_version: int = 0) -> StreamData:
+        with self._request_lock:
+            return self._read_stream_locked(key, from_version)
+
+    def _read_stream_locked(self, key: str, from_version: int) -> StreamData:
         cmd = CommandBuilder.read_stream(self._topic, key, from_version=from_version)
         last_error = ""
         for attempt in range(7):
@@ -223,7 +239,8 @@ class EventStore:
             raise ConnectionError(f"broker: {resp}") from exc
 
     def close(self) -> None:
-        self._reset_conn()
+        with self._request_lock:
+            self._reset_conn()
 
     def __enter__(self) -> Self:
         return self
