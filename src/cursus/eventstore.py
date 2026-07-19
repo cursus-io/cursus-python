@@ -74,9 +74,7 @@ class EventStore:
                 retry_topic_errors=retry_topic_errors,
             )
 
-    def _send_command_locked(
-        self, cmd: str, *, retries: int, retry_topic_errors: bool
-    ) -> str:
+    def _send_command_locked(self, cmd: str, *, retries: int, retry_topic_errors: bool) -> str:
         last_resp = ""
         for attempt in range(retries + 1):
             resp = self._send_command_once(cmd)

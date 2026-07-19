@@ -128,10 +128,7 @@ async def test_shared_async_event_store_serializes_concurrent_reads(broker_addr,
     await es.append(key=key, expected_version=1, event=Event(type="Created", payload="{}"))
 
     results = await asyncio.gather(
-        *[
-            es.read_stream(key) if index % 2 == 0 else es.stream_version(key)
-            for index in range(20)
-        ]
+        *[es.read_stream(key) if index % 2 == 0 else es.stream_version(key) for index in range(20)]
     )
 
     assert all(
