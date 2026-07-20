@@ -1,8 +1,10 @@
+import asyncio
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from cursus import Event, EventStore
+from cursus import AsyncEventStore, Event, EventStore
 from cursus.errors import ConnectionError
 
 
@@ -97,3 +99,40 @@ def test_read_snapshot_not_found(broker_addr, topic):
     assert snap is None
 
     es.close()
+
+
+def test_shared_event_store_serializes_concurrent_reads(broker_addr, topic, key):
+    es = EventStore(addr=broker_addr, topic=topic, producer_id="test")
+    es.create_topic(partitions=2)
+    es.append(key=key, expected_version=1, event=Event(type="Created", payload="{}"))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(es.read_stream, key)
+            if index % 2 == 0
+            else executor.submit(es.stream_version, key)
+            for index in range(20)
+        ]
+        results = [future.result(timeout=5) for future in futures]
+
+    assert all(
+        len(result.events) == 1 if index % 2 == 0 else result == 1
+        for index, result in enumerate(results)
+    )
+    es.close()
+
+
+async def test_shared_async_event_store_serializes_concurrent_reads(broker_addr, topic, key):
+    es = AsyncEventStore(addr=broker_addr, topic=topic, producer_id="test")
+    await es.create_topic(partitions=2)
+    await es.append(key=key, expected_version=1, event=Event(type="Created", payload="{}"))
+
+    results = await asyncio.gather(
+        *[es.read_stream(key) if index % 2 == 0 else es.stream_version(key) for index in range(20)]
+    )
+
+    assert all(
+        len(result.events) == 1 if index % 2 == 0 else result == 1
+        for index, result in enumerate(results)
+    )
+    await es.close()
