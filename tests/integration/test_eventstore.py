@@ -3,14 +3,17 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from conftest import provision_topic
 
 from cursus import AsyncEventStore, Event, EventStore
 from cursus.errors import ConnectionError
 
 
 @pytest.fixture
-def topic():
-    return f"es-{uuid.uuid4().hex[:8]}"
+def topic(broker_addr):
+    name = f"es-{uuid.uuid4().hex[:8]}"
+    provision_topic(broker_addr, name, partitions=2, event_sourcing=True)
+    return name
 
 
 @pytest.fixture
@@ -18,15 +21,13 @@ def key():
     return f"agg-{uuid.uuid4().hex[:8]}"
 
 
-def test_create_topic(broker_addr, topic):
+def test_uses_admin_provisioned_topic(broker_addr, topic):
     es = EventStore(addr=broker_addr, topic=topic, producer_id="test")
-    es.create_topic(partitions=2)
     es.close()
 
 
 def test_append_event(broker_addr, topic, key):
     es = EventStore(addr=broker_addr, topic=topic, producer_id="test")
-    es.create_topic(partitions=2)
 
     result = es.append(
         key=key,
@@ -40,7 +41,6 @@ def test_append_event(broker_addr, topic, key):
 
 def test_append_multiple_versions(broker_addr, topic, key):
     es = EventStore(addr=broker_addr, topic=topic, producer_id="test")
-    es.create_topic(partitions=2)
 
     r1 = es.append(key=key, expected_version=1, event=Event(type="Created", payload="{}"))
     assert r1.version == 1
@@ -51,9 +51,23 @@ def test_append_multiple_versions(broker_addr, topic, key):
     es.close()
 
 
+@pytest.mark.parametrize("_iteration", range(3))
+def test_read_stream_receives_correlated_envelope_and_batch(broker_addr, topic, key, _iteration):
+    es = EventStore(addr=broker_addr, topic=topic, producer_id="test")
+    es.append(key=key, expected_version=1, event=Event(type="Created", payload='{"x":1}'))
+    es.append(key=key, expected_version=2, event=Event(type="Updated", payload='{"x":2}'))
+
+    stream = es.read_stream(key)
+
+    assert [(event.version, event.type, event.payload) for event in stream.events] == [
+        (1, "Created", '{"x":1}'),
+        (2, "Updated", '{"x":2}'),
+    ]
+    es.close()
+
+
 def test_append_version_conflict(broker_addr, topic, key):
     es = EventStore(addr=broker_addr, topic=topic, producer_id="test")
-    es.create_topic(partitions=2)
 
     es.append(key=key, expected_version=1, event=Event(type="Created", payload="{}"))
 
@@ -65,7 +79,6 @@ def test_append_version_conflict(broker_addr, topic, key):
 
 def test_stream_version(broker_addr, topic, key):
     es = EventStore(addr=broker_addr, topic=topic, producer_id="test")
-    es.create_topic(partitions=2)
 
     es.append(key=key, expected_version=1, event=Event(type="Created", payload="{}"))
     es.append(key=key, expected_version=2, event=Event(type="Updated", payload="{}"))
@@ -78,7 +91,6 @@ def test_stream_version(broker_addr, topic, key):
 
 def test_save_and_read_snapshot(broker_addr, topic, key):
     es = EventStore(addr=broker_addr, topic=topic, producer_id="test")
-    es.create_topic(partitions=2)
 
     es.append(key=key, expected_version=1, event=Event(type="Created", payload="{}"))
     es.save_snapshot(key, version=1, payload='{"state":"saved"}')
@@ -93,7 +105,6 @@ def test_save_and_read_snapshot(broker_addr, topic, key):
 
 def test_read_snapshot_not_found(broker_addr, topic):
     es = EventStore(addr=broker_addr, topic=topic, producer_id="test")
-    es.create_topic(partitions=2)
 
     snap = es.read_snapshot(f"nonexistent-{uuid.uuid4().hex[:8]}")
     assert snap is None

@@ -18,6 +18,7 @@ class OffsetClient:
         backoff_ms: int = 100,
         tls_cert_path: str | None = None,
         tls_key_path: str | None = None,
+        compression_type: str = "none",
     ) -> None:
         self._principal = principal
         self._auth_token = auth_token
@@ -28,6 +29,9 @@ class OffsetClient:
             backoff_ms=backoff_ms,
             tls_cert_path=tls_cert_path,
             tls_key_path=tls_key_path,
+            compression_type=compression_type,
+            principal=principal,
+            auth_token=auth_token,
         )
 
     def list_offsets(self, topic: str, partition: int | None = None) -> list[PartitionOffsetRange]:

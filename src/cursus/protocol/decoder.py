@@ -1,5 +1,7 @@
 import json
+import shlex
 import struct
+from typing import Any
 
 from cursus.errors import (
     AuthenticationRequiredError,
@@ -9,6 +11,7 @@ from cursus.errors import (
     ProtocolError,
     ValidationError,
 )
+from cursus.protocol.wire import BATCH_MAGIC, BATCH_VERSION
 from cursus.types import (
     AckResponse,
     Message,
@@ -19,7 +22,24 @@ from cursus.types import (
     TransactionStatus,
 )
 
-BATCH_MAGIC = 0xBA7C
+_BATCH_FLAG_IDEMPOTENT = 1
+_RECORD_VERSION = 2
+_RECORD_TIMESTAMP = 1 << 0
+_RECORD_PRODUCER = 1 << 1
+_RECORD_KEY = 1 << 2
+_RECORD_EVENT_TYPE = 1 << 3
+_RECORD_SCHEMA_VERSION = 1 << 4
+_RECORD_AGGREGATE_VERSION = 1 << 5
+_RECORD_METADATA = 1 << 6
+_RECORD_TRANSACTIONAL_ID = 1 << 7
+_RECORD_TRANSACTION_STATE = 1 << 8
+_RECORD_TRANSACTION_MARKER = 1 << 9
+_RECORD_CONTROL_BATCH_TYPE = 1 << 10
+_RECORD_CONTROL_BATCH_VERSION = 1 << 11
+_RECORD_CONTROL_COORDINATOR_EPOCH = 1 << 12
+_RECORD_CONTROL_KEY = 1 << 13
+_RECORD_CONTROL_VALUE = 1 << 14
+_RECORD_KNOWN_MASK = (1 << 15) - 1
 
 
 class _ByteReader:
@@ -58,58 +78,110 @@ class _ByteReader:
     def read_str(self, length: int) -> str:
         return self.read(length).decode()
 
+    def read_int16(self) -> int:
+        return int(struct.unpack(">h", self.read(2))[0])
+
+    def read_bytes(self) -> bytes:
+        return self.read(self.read_uint32())
+
+    def read_string(self) -> str:
+        try:
+            return self.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProtocolError("invalid UTF-8 record field") from exc
+
+    def finish(self) -> None:
+        if self._pos != len(self._data):
+            raise ProtocolError(f"batch has {len(self._data) - self._pos} trailing bytes")
+
 
 def decode_batch(data: bytes) -> tuple[list[Message], str, int]:
     r = _ByteReader(data)
 
-    magic = r.read_uint16()
+    magic = r.read_uint32()
     if magic != BATCH_MAGIC:
-        raise ProtocolError(f"invalid magic number: 0x{magic:04X}")
+        raise ProtocolError(f"invalid magic number: 0x{magic:08X}")
+    version = r.read_uint16()
+    if version != BATCH_VERSION:
+        raise ProtocolError(f"unsupported batch version: {version}")
+    flags = r.read_uint16()
+    if flags & ~_BATCH_FLAG_IDEMPOTENT:
+        raise ProtocolError(f"batch contains unknown flags: 0x{flags:X}")
 
-    topic = r.read_str(r.read_uint16())
+    topic = r.read_string()
     partition = r.read_int32()
-
-    r.read_str(r.read_uint8())
-    r.read_bool()
-
+    acks = r.read_string()
+    if acks not in ("", "0", "1", "-1", "all"):
+        raise ProtocolError(f"invalid acknowledgements: {acks}")
     r.read_uint64()
     r.read_uint64()
 
-    msg_count = r.read_int32()
+    msg_count = r.read_uint32()
+    if msg_count > 100_000:
+        raise ProtocolError("message count exceeds Wire v2 maximum")
     messages: list[Message] = []
 
     for _ in range(msg_count):
-        offset = r.read_uint64()
-        seq_num = r.read_uint64()
-        producer_id = r.read_str(r.read_uint16())
-        key = r.read_str(r.read_uint16())
-        epoch = r.read_int64()
-        payload = r.read_str(r.read_uint32())
-        event_type = r.read_str(r.read_uint16())
-        schema_version = r.read_uint32()
-        aggregate_version = r.read_uint64()
-        metadata = r.read_str(r.read_uint16())
-
-        if payload == "__cursus_txn_control_marker__":
+        record = _decode_record(r.read_bytes())
+        if record.pop("topic") != topic or record["partition"] != partition:
+            raise ProtocolError("record routing conflicts with batch")
+        if record["payload"] == "__cursus_txn_control_marker__":
             continue
+        messages.append(Message(**record))
 
-        messages.append(
-            Message(
-                offset=offset,
-                seq_num=seq_num,
-                payload=payload,
-                producer_id=producer_id,
-                key=key,
-                epoch=epoch,
-                event_type=event_type,
-                schema_version=schema_version,
-                aggregate_version=aggregate_version,
-                metadata=metadata,
-                partition=partition,
-            )
-        )
-
+    r.finish()
     return messages, topic, partition
+
+
+def _decode_record(data: bytes) -> dict[str, Any]:
+    r = _ByteReader(data)
+    version = r.read_uint16()
+    if version != _RECORD_VERSION:
+        raise ProtocolError(f"unsupported record version: {version}")
+    presence = r.read_uint64()
+    if presence & ~_RECORD_KNOWN_MASK:
+        raise ProtocolError(f"record contains unknown presence bits: 0x{presence:X}")
+    result: dict[str, Any] = {
+        "topic": r.read_string(),
+        "partition": r.read_int32(),
+        "offset": r.read_uint64(),
+        "payload": r.read_string(),
+        "seq_num": 0,
+    }
+    if presence & _RECORD_TIMESTAMP:
+        result["timestamp"] = r.read_int64()
+    if presence & _RECORD_PRODUCER:
+        result["producer_id"] = r.read_string()
+        result["seq_num"] = r.read_uint64()
+        result["epoch"] = r.read_int64()
+    if presence & _RECORD_KEY:
+        result["key"] = r.read_string()
+    if presence & _RECORD_EVENT_TYPE:
+        result["event_type"] = r.read_string()
+    if presence & _RECORD_SCHEMA_VERSION:
+        result["schema_version"] = r.read_uint32()
+    if presence & _RECORD_AGGREGATE_VERSION:
+        result["aggregate_version"] = r.read_uint64()
+    if presence & _RECORD_METADATA:
+        result["metadata"] = r.read_string()
+    if presence & _RECORD_TRANSACTIONAL_ID:
+        result["transactional_id"] = r.read_string()
+    if presence & _RECORD_TRANSACTION_STATE:
+        result["transaction_state"] = r.read_string()
+    if presence & _RECORD_TRANSACTION_MARKER:
+        result["transaction_marker"] = r.read_string()
+    if presence & _RECORD_CONTROL_BATCH_TYPE:
+        result["control_batch_type"] = r.read_string()
+    if presence & _RECORD_CONTROL_BATCH_VERSION:
+        result["control_batch_version"] = r.read_int16()
+    if presence & _RECORD_CONTROL_COORDINATOR_EPOCH:
+        result["control_batch_coordinator_epoch"] = r.read_int64()
+    if presence & _RECORD_CONTROL_KEY:
+        result["control_batch_key"] = r.read_bytes()
+    if presence & _RECORD_CONTROL_VALUE:
+        result["control_batch_value"] = r.read_bytes()
+    r.finish()
+    return result
 
 
 def is_ok_response(response: str) -> bool:
@@ -141,7 +213,7 @@ def decode_error_fields(response: str) -> dict[str, str]:
     resp = response.strip()
     if not is_error_response(resp):
         return {}
-    return _decode_fields(resp.split()[2:])
+    return _decode_fields(shlex.split(resp)[2:])
 
 
 def decode_error_code(response: str) -> str:
@@ -155,16 +227,24 @@ def decode_error_code(response: str) -> str:
 def error_from_response(response: str) -> BrokerError:
     code = decode_error_code(response)
     fields = decode_error_fields(response)
+    error_class = fields.pop("class", "")
+    retryable = fields.pop("retryable", "false").lower() == "true"
     lower = response.lower()
     if code in {"AUTHENTICATION_REQUIRED", "authentication_required"}:
-        return AuthenticationRequiredError(code, fields, response)
+        return AuthenticationRequiredError(
+            code, error_class, retryable, response, fields, response=response
+        )
     if code in {"NOT_AUTHORIZED_FOR_TOPIC", "authorization_denied", "AUTHORIZATION_DENIED"}:
-        return AuthorizationDeniedError(code, fields, response)
+        return AuthorizationDeniedError(
+            code, error_class, retryable, response, fields, response=response
+        )
     if "producer_fenced" in lower or "stale_producer_epoch" in lower:
-        return ProducerFencedError(code or "producer_fenced", fields, response)
+        return ProducerFencedError(
+            code or "producer_fenced", error_class, retryable, response, fields, response=response
+        )
     if code.startswith("invalid_") or code.startswith("missing_"):
-        return ValidationError(code, fields, response)
-    return BrokerError(code, fields, response)
+        return ValidationError(code, error_class, retryable, response, fields, response=response)
+    return BrokerError(code, error_class, retryable, response, fields, response=response)
 
 
 def require_ok(response: str, *, operation: str = "command") -> dict[str, str]:
@@ -359,7 +439,26 @@ def decode_snapshot_response(response: str) -> str | None:
 
 
 def decode_ack(data: bytes) -> AckResponse:
-    obj = json.loads(data)
+    text = data.decode("utf-8").strip()
+    if text.startswith("ERROR:"):
+        tokens = shlex.split(text)
+        fields = decode_error_fields(text)
+        return AckResponse(
+            status="ERROR",
+            last_offset=int(fields.get("offset", "0")),
+            producer_epoch=0,
+            producer_id="",
+            seq_start=0,
+            seq_end=0,
+            error=text,
+            error_code=tokens[1] if len(tokens) > 1 else "",
+            error_class=fields.get("class", ""),
+            retryable=fields.get("retryable", "false").lower() == "true",
+            error_fields={
+                key: value for key, value in fields.items() if key not in {"class", "retryable"}
+            },
+        )
+    obj = json.loads(text)
     return AckResponse(
         status=obj.get("status", ""),
         last_offset=obj.get("last_offset", 0),
@@ -369,4 +468,8 @@ def decode_ack(data: bytes) -> AckResponse:
         seq_end=obj.get("seq_end", 0),
         leader=obj.get("leader", ""),
         error=obj.get("error", ""),
+        error_code=obj.get("error_code", ""),
+        error_class=obj.get("error_class", ""),
+        retryable=bool(obj.get("retryable", False)),
+        error_fields=dict(obj.get("error_fields", {})),
     )

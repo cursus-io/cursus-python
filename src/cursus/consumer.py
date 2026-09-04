@@ -3,10 +3,10 @@ from collections.abc import Callable, Iterator
 
 from typing_extensions import Self
 
-from cursus.compression.registry import CompressionRegistry
 from cursus.config import ConsumerConfig
 from cursus.connection.sync_conn import SyncConnection
 from cursus.errors import ConnectionError
+from cursus.metrics import ClientMetrics
 from cursus.protocol.command import CommandBuilder
 from cursus.protocol.decoder import (
     decode_batch,
@@ -23,9 +23,9 @@ from cursus.types import AutoOffsetReset, ConsumerMode, Message, OffsetRange, St
 
 
 class Consumer:
-    def __init__(self, config: ConsumerConfig) -> None:
+    def __init__(self, config: ConsumerConfig, metrics: ClientMetrics | None = None) -> None:
         self._config = config
-        self._compression = CompressionRegistry()
+        self._metrics = metrics or ClientMetrics()
         self._closed = False
         self._close_lock = threading.Lock()
         self._done = threading.Event()
@@ -125,7 +125,14 @@ class Consumer:
 
         for addr in addrs:
             try:
-                conn = SyncConnection(addr)
+                conn = SyncConnection(
+                    addr,
+                    tls_cert_path=self._config.tls_cert_path,
+                    tls_key_path=self._config.tls_key_path,
+                    compression_type=self._config.compression_type,
+                    principal=self._config.principal,
+                    auth_token=self._config.auth_token,
+                )
                 conn.connect()
                 self._leader_addr = addr
                 return conn
@@ -142,9 +149,12 @@ class Consumer:
             finally:
                 conn.close()
 
-            if "NOT_LEADER LEADER_IS" in resp:
+            if "NOT_LEADER" in resp.upper():
                 parts = resp.split()
                 for i, p in enumerate(parts):
+                    if p.startswith("leader=") and len(p) > len("leader="):
+                        self._leader_addr = p[len("leader=") :]
+                        break
                     if p == "LEADER_IS" and i + 1 < len(parts):
                         self._leader_addr = parts[i + 1]
                         break
@@ -170,7 +180,14 @@ class Consumer:
     def _send_coordinator_command(self, cmd: str) -> str:
         for _attempt in range(3):
             addr = self._coordinator_addr or self._leader_addr or self._config.brokers[0]
-            conn = SyncConnection(addr)
+            conn = SyncConnection(
+                addr,
+                tls_cert_path=self._config.tls_cert_path,
+                tls_key_path=self._config.tls_key_path,
+                compression_type=self._config.compression_type,
+                principal=self._config.principal,
+                auth_token=self._config.auth_token,
+            )
             try:
                 conn.connect()
                 conn.write_frame(encode_message("", cmd))
@@ -208,7 +225,14 @@ class Consumer:
         if not addr:
             return self._connect_to_leader()
         try:
-            conn = SyncConnection(addr)
+            conn = SyncConnection(
+                addr,
+                tls_cert_path=self._config.tls_cert_path,
+                tls_key_path=self._config.tls_key_path,
+                compression_type=self._config.compression_type,
+                principal=self._config.principal,
+                auth_token=self._config.auth_token,
+            )
             conn.connect()
             return conn
         except ConnectionError:
@@ -231,6 +255,7 @@ class Consumer:
             self._queue_cond.notify_all()
 
     def _restart_assignment(self) -> None:
+        self.metrics.increment("cursus.consumer.rebalance.count")
         self._stop_partition_workers()
         with self._queue_cond:
             self._message_queue.clear()
@@ -318,6 +343,7 @@ class Consumer:
             try:
                 self._send_heartbeat_once()
             except Exception:
+                self.metrics.increment("cursus.consumer.heartbeat.failed")
                 pass
 
     def _send_heartbeat_once(self) -> None:
@@ -372,8 +398,14 @@ class Consumer:
         )
 
     def _record_leader_redirect(self, partition: int, response: str) -> bool:
-        if "NOT_LEADER LEADER_IS" not in response:
+        if "NOT_LEADER" not in response.upper():
             return False
+        for part in response.split():
+            if part.startswith("leader=") and len(part) > len("leader="):
+                self._partition_leaders[partition] = part[len("leader=") :]
+                return True
+        if "NOT_LEADER LEADER_IS" not in response:
+            return True
         parts = response.split()
         for i, part in enumerate(parts):
             if part == "LEADER_IS" and i + 1 < len(parts):
@@ -411,14 +443,10 @@ class Consumer:
         if text_result is not None:
             return text_result
 
-        data = self._compression.decompress(frame, self._config.compression_type)
-        text_result = self._handle_text_frame(partition, data)
-        if text_result is not None:
-            return text_result
-
-        if len(data) > 2:
-            messages, _, _ = decode_batch(data)
+        if len(frame) > 2:
+            messages, _, _ = decode_batch(frame)
             if messages and self._partition_active(epoch):
+                self.metrics.increment("cursus.consumer.messages.received", len(messages))
                 with self._queue_cond:
                     self._message_queue.extend(messages)
                     self._queue_cond.notify()
@@ -510,6 +538,7 @@ class Consumer:
             self._offsets[partition] = control.offset
 
     def _mark_processed(self, msg: Message) -> None:
+        self.metrics.increment("cursus.consumer.messages.processed")
         partition = msg.partition
         next_offset = msg.offset + 1
         if next_offset <= self._committed_offsets.get(partition, 0):
@@ -562,16 +591,26 @@ class Consumer:
             )
         resp = self._send_coordinator_command(cmd)
         if resp.startswith("OK"):
+            self.metrics.increment("cursus.consumer.commit.count")
             for partition, offset in offsets.items():
                 if offset > self._committed_offsets.get(partition, 0):
                     self._committed_offsets[partition] = offset
             return
         if is_offset_regression(resp):
+            self.metrics.increment("cursus.consumer.commit.failed")
             raise ConnectionError(f"offset commit rejected: {resp}")
         if is_coordinator_failure(resp):
+            self.metrics.increment("cursus.consumer.commit.failed")
             self._request_rejoin()
             raise ConnectionError(f"coordinator rejected offset commit: {resp}")
+        self.metrics.increment("cursus.consumer.commit.failed")
         raise ConnectionError(f"offset commit failed: {resp}")
+
+    @property
+    def metrics(self) -> ClientMetrics:
+        if not hasattr(self, "_metrics"):
+            self._metrics = ClientMetrics()
+        return self._metrics
 
     def close(self) -> None:
         with self._close_lock:
