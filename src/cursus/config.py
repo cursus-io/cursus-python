@@ -16,6 +16,7 @@ def _generate_consumer_id() -> str:
 class ProducerConfig:
     topic: str
     brokers: list[str] = field(default_factory=_default_brokers)
+    auto_create_topics: bool = False
     partitions: int = 4
     acks: Acks = Acks.ONE
     batch_size: int = 500

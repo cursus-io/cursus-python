@@ -1,11 +1,11 @@
 import uuid
 
+from conftest import provision_topic
+
 from cursus import (
     Consumer,
     ConsumerConfig,
     ConsumerMode,
-    Producer,
-    ProducerConfig,
     TransactionalProducer,
 )
 from cursus.offsets import OffsetClient
@@ -14,8 +14,7 @@ from cursus.types import IsolationLevel
 
 def test_list_offsets_and_transaction_commit_smoke(broker_addr):
     topic = f"txn-{uuid.uuid4().hex[:8]}"
-    with Producer(ProducerConfig(brokers=[broker_addr], topic=topic, partitions=1, batch_size=1)):
-        pass
+    provision_topic(broker_addr, topic, partitions=1)
 
     offsets = OffsetClient([broker_addr]).list_offsets(topic, 0)
     assert offsets[0].partition == 0
@@ -44,8 +43,7 @@ def test_list_offsets_and_transaction_commit_smoke(broker_addr):
 
 def test_transaction_abort_not_visible_to_read_committed(broker_addr):
     topic = f"txn-abort-{uuid.uuid4().hex[:8]}"
-    with Producer(ProducerConfig(brokers=[broker_addr], topic=topic, partitions=1, batch_size=1)):
-        pass
+    provision_topic(broker_addr, topic, partitions=1)
 
     tx = TransactionalProducer(f"tx-{uuid.uuid4().hex[:8]}", [broker_addr])
     tx.begin_transaction()

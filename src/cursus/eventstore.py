@@ -13,20 +13,43 @@ from cursus.types import AppendResult, Event, Snapshot, StreamData, StreamEvent
 
 
 class EventStore:
-    def __init__(self, addr: str | list[str], topic: str, producer_id: str) -> None:
+    def __init__(
+        self,
+        addr: str | list[str],
+        topic: str,
+        producer_id: str,
+        *,
+        compression_type: str = "none",
+        tls_cert_path: str | None = None,
+        tls_key_path: str | None = None,
+        principal: str | None = None,
+        auth_token: str | None = None,
+    ) -> None:
         self._addrs = [addr] if isinstance(addr, str) else list(addr)
         if not self._addrs:
             raise ValueError("at least one broker address is required")
         self._addr = self._addrs[0]
         self._topic = topic
         self._producer_id = producer_id
+        self._compression_type = compression_type
+        self._tls_cert_path = tls_cert_path
+        self._tls_key_path = tls_key_path
+        self._principal = principal
+        self._auth_token = auth_token
         self._conn: SyncConnection | None = None
         self._request_lock = threading.Lock()
 
     def _get_conn(self) -> SyncConnection:
         if self._conn is not None:
             return self._conn
-        conn = SyncConnection(self._addr)
+        conn = SyncConnection(
+            self._addr,
+            tls_cert_path=self._tls_cert_path,
+            tls_key_path=self._tls_key_path,
+            compression_type=self._compression_type,
+            principal=self._principal,
+            auth_token=self._auth_token,
+        )
         conn.connect()
         self._conn = conn
         return conn
@@ -43,6 +66,9 @@ class EventStore:
 
     @staticmethod
     def _leader_from_error(resp: str) -> str | None:
+        for part in resp.split():
+            if part.startswith("leader=") and len(part) > len("leader="):
+                return part[len("leader=") :]
         marker = "NOT_LEADER LEADER_IS"
         if marker not in resp:
             return None
@@ -123,6 +149,24 @@ class EventStore:
             return self._parse_append_response(resp)
         except ValueError as exc:
             raise ConnectionError(f"broker: {resp}") from exc
+
+    def append_envelope(self, key: str, expected_version: int, envelope: object) -> AppendResult:
+        from cursus.event_framework import EventEnvelope
+
+        if not isinstance(envelope, EventEnvelope):
+            raise TypeError("envelope must be an EventEnvelope")
+        if envelope.aggregate_id and envelope.aggregate_id != key:
+            raise ValueError("event aggregate id does not match stream key")
+        if envelope.aggregate_version not in (0, expected_version + 1):
+            raise ValueError("event aggregate version does not match expected version")
+        envelope.aggregate_id = envelope.aggregate_id or key
+        envelope.aggregate_version = envelope.aggregate_version or expected_version + 1
+        return self.append(key, expected_version, envelope.to_event())
+
+    def read_envelopes(self, key: str) -> list[object]:
+        from cursus.event_framework import EventEnvelope
+
+        return [EventEnvelope.from_stream_event(event) for event in self.read_stream(key).events]
 
     def _parse_append_response(self, resp: str) -> AppendResult:
         if not resp.startswith("OK"):

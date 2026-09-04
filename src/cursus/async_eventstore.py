@@ -13,17 +13,40 @@ from cursus.types import AppendResult, Event, Snapshot, StreamData, StreamEvent
 
 
 class AsyncEventStore:
-    def __init__(self, addr: str, topic: str, producer_id: str) -> None:
+    def __init__(
+        self,
+        addr: str,
+        topic: str,
+        producer_id: str,
+        *,
+        compression_type: str = "none",
+        tls_cert_path: str | None = None,
+        tls_key_path: str | None = None,
+        principal: str | None = None,
+        auth_token: str | None = None,
+    ) -> None:
         self._addr = addr
         self._topic = topic
         self._producer_id = producer_id
+        self._compression_type = compression_type
+        self._tls_cert_path = tls_cert_path
+        self._tls_key_path = tls_key_path
+        self._principal = principal
+        self._auth_token = auth_token
         self._conn: AsyncConnection | None = None
         self._request_lock = asyncio.Lock()
 
     async def _get_conn(self) -> AsyncConnection:
         if self._conn is not None:
             return self._conn
-        conn = AsyncConnection(self._addr)
+        conn = AsyncConnection(
+            self._addr,
+            tls_cert_path=self._tls_cert_path,
+            tls_key_path=self._tls_key_path,
+            compression_type=self._compression_type,
+            principal=self._principal,
+            auth_token=self._auth_token,
+        )
         await conn.connect()
         self._conn = conn
         return conn

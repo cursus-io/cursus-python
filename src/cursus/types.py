@@ -37,6 +37,15 @@ class Message:
     aggregate_version: int = 0
     metadata: str = ""
     partition: int = 0
+    timestamp: int = 0
+    transactional_id: str = ""
+    transaction_state: str = ""
+    transaction_marker: str = ""
+    control_batch_type: str = ""
+    control_batch_version: int = 0
+    control_batch_coordinator_epoch: int = 0
+    control_batch_key: bytes | None = None
+    control_batch_value: bytes | None = None
 
 
 @dataclass
@@ -49,6 +58,10 @@ class AckResponse:
     seq_end: int
     leader: str = ""
     error: str = ""
+    error_code: str = ""
+    error_class: str = ""
+    retryable: bool = False
+    error_fields: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -4,7 +4,6 @@ from types import TracebackType
 
 from typing_extensions import Self
 
-from cursus.compression.registry import CompressionRegistry
 from cursus.config import ConsumerConfig
 from cursus.connection.async_conn import AsyncConnection
 from cursus.errors import ConnectionError
@@ -26,7 +25,6 @@ from cursus.types import AutoOffsetReset, ConsumerMode, Message, OffsetRange, St
 class AsyncConsumer:
     def __init__(self, config: ConsumerConfig) -> None:
         self._config = config
-        self._compression = CompressionRegistry()
         self._closed = False
         self._stop_event = asyncio.Event()
         self._queue: asyncio.Queue[Message] = asyncio.Queue()
@@ -57,7 +55,14 @@ class AsyncConsumer:
 
         for addr in addrs:
             try:
-                conn = AsyncConnection(addr)
+                conn = AsyncConnection(
+                    addr,
+                    tls_cert_path=self._config.tls_cert_path,
+                    tls_key_path=self._config.tls_key_path,
+                    compression_type=self._config.compression_type,
+                    principal=self._config.principal,
+                    auth_token=self._config.auth_token,
+                )
                 await conn.connect()
                 if preferred is None:
                     self._leader_addr = addr
@@ -211,10 +216,13 @@ class AsyncConsumer:
         return not self._stop_event.is_set() and not self._rejoin_event.is_set()
 
     def _record_leader_redirect(self, partition: int, response: str) -> bool:
-        if "NOT_LEADER LEADER_IS" not in response:
+        if "NOT_LEADER" not in response.upper():
             return False
         parts = response.split()
         for i, token in enumerate(parts):
+            if token.startswith("leader=") and len(token) > len("leader="):
+                self._partition_leaders[partition] = token[len("leader=") :]
+                break
             if token == "LEADER_IS" and i + 1 < len(parts):
                 self._partition_leaders[partition] = parts[i + 1]
                 break
@@ -250,13 +258,8 @@ class AsyncConsumer:
         if text_result is not None:
             return text_result
 
-        data = self._compression.decompress(frame, self._config.compression_type)
-        text_result = self._handle_text_frame(partition, data)
-        if text_result is not None:
-            return text_result
-
-        if len(data) > 2:
-            messages, _, _ = decode_batch(data)
+        if len(frame) > 2:
+            messages, _, _ = decode_batch(frame)
             if self._partition_active():
                 for msg in messages:
                     await self._queue.put(msg)

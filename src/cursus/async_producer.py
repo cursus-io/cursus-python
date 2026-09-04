@@ -4,10 +4,9 @@ from types import TracebackType
 
 from typing_extensions import Self
 
-from cursus.compression.registry import CompressionRegistry
 from cursus.config import ProducerConfig
 from cursus.connection.async_conn import AsyncConnection
-from cursus.errors import ConnectionError, ProducerClosedError, ProducerFencedError
+from cursus.errors import BrokerError, ConnectionError, ProducerClosedError, ProducerFencedError
 from cursus.protocol.command import CommandBuilder
 from cursus.protocol.decoder import decode_ack, is_terminal_producer_error
 from cursus.protocol.encoder import encode_batch, encode_message
@@ -17,11 +16,11 @@ from cursus.types import Message
 class AsyncProducer:
     def __init__(self, config: ProducerConfig) -> None:
         self._config = config
-        self._compression = CompressionRegistry()
         self._closed = False
         self._seq_counters = [0] * config.partitions
         self._rr = 0
         self._unique_ack_count = 0
+        self._background_error: Exception | None = None
         self._in_flight = [0] * config.partitions
         self._buffers: list[list[Message]] = [[] for _ in range(config.partitions)]
         self._tasks: list[asyncio.Task[None]] = []
@@ -32,25 +31,39 @@ class AsyncProducer:
         self._stop_event = asyncio.Event()
 
     async def start(self) -> None:
-        await self._create_topic()
+        if self._config.auto_create_topics:
+            await self._create_topic()
         await self._fetch_metadata()
         for part in range(self._config.partitions):
             task = asyncio.create_task(self._partition_sender(part))
             self._tasks.append(task)
 
     async def _create_topic(self) -> None:
-        try:
-            async with AsyncConnection(self._config.brokers[0]) as conn:
-                cmd = CommandBuilder.create(self._config.topic, self._config.partitions)
-                await conn.write_frame(encode_message("admin", cmd))
-                await conn.read_frame()
-        except Exception:
-            pass
+        async with AsyncConnection(
+            self._config.brokers[0],
+            tls_cert_path=self._config.tls_cert_path,
+            tls_key_path=self._config.tls_key_path,
+            compression_type=self._config.compression_type,
+            principal=self._config.principal,
+            auth_token=self._config.auth_token,
+        ) as conn:
+            cmd = CommandBuilder.create(self._config.topic, self._config.partitions)
+            await conn.write_frame(encode_message("admin", cmd))
+            response = (await conn.read_frame()).decode(errors="replace")
+            if response != "OK" and not response.startswith("OK "):
+                raise ConnectionError(f"topic auto-create failed: {response}")
 
     async def _fetch_metadata(self) -> None:
         for addr in self._config.brokers:
             try:
-                async with AsyncConnection(addr) as conn:
+                async with AsyncConnection(
+                    addr,
+                    tls_cert_path=self._config.tls_cert_path,
+                    tls_key_path=self._config.tls_key_path,
+                    compression_type=self._config.compression_type,
+                    principal=self._config.principal,
+                    auth_token=self._config.auth_token,
+                ) as conn:
                     await conn.write_frame(
                         encode_message("", f"METADATA topic={self._config.topic}")
                     )
@@ -93,7 +106,14 @@ class AsyncProducer:
         last_error: Exception | None = None
         for addr in addrs:
             try:
-                conn = AsyncConnection(addr)
+                conn = AsyncConnection(
+                    addr,
+                    tls_cert_path=self._config.tls_cert_path,
+                    tls_key_path=self._config.tls_key_path,
+                    compression_type=self._config.compression_type,
+                    principal=self._config.principal,
+                    auth_token=self._config.auth_token,
+                )
                 await conn.connect()
                 return conn
             except Exception as exc:
@@ -159,8 +179,10 @@ class AsyncProducer:
                     self._config.idempotent,
                     batch,
                 )
-                data = self._compression.compress(data, self._config.compression_type)
                 await conn.write_frame(data)
+                if self._config.acks.value == "0":
+                    self._in_flight[part] -= 1
+                    continue
                 resp_data = await conn.read_frame()
                 resp_text = resp_data.decode("utf-8", errors="replace")
                 if "NOT_LEADER LEADER_IS" in resp_text:
@@ -171,7 +193,8 @@ class AsyncProducer:
                             break
                     await conn.close()
                     conn = None
-                    self._buffers[part] = batch + self._buffers[part]
+                    if self._config.idempotent:
+                        self._buffers[part] = batch + self._buffers[part]
                     self._in_flight[part] -= 1
                     continue
                 ack = decode_ack(resp_data)
@@ -179,26 +202,49 @@ class AsyncProducer:
                     self._unique_ack_count += len(batch)
                     self._in_flight[part] -= 1
                 elif ack.error and is_terminal_producer_error(ack.error):
-                    self._closed = True
                     self._stop_event.set()
                     raise ProducerFencedError(ack.error)
+                elif ack.error:
+                    raise BrokerError(
+                        ack.error_code,
+                        ack.error_class,
+                        ack.retryable,
+                        ack.error,
+                        ack.error_fields,
+                    )
                 else:
                     error = ack.error or f"broker returned status={ack.status}"
                     raise ConnectionError(f"broker rejected batch for partition {part}: {error}")
-            except ProducerFencedError:
+            except ProducerFencedError as exc:
                 if conn is not None:
                     await conn.close()
                     conn = None
+                self._record_background_error(exc)
                 self._in_flight[part] -= 1
                 continue
-            except Exception:
+            except BrokerError as exc:
                 if conn is not None:
                     await conn.close()
                     conn = None
-                if batch:
+                if exc.code.lower() == "not_leader" and exc.fields.get("leader"):
+                    self._partition_leaders[part] = exc.fields["leader"]
+                if exc.can_retry(idempotent=self._config.idempotent) and batch:
                     self._buffers[part] = batch + self._buffers[part]
+                    self._events[part].set()
+                    await asyncio.sleep(min(self._config.max_backoff_ms / 1000.0, 0.1))
+                else:
+                    self._record_background_error(exc)
                 self._in_flight[part] -= 1
-                if batch:
+            except Exception as exc:
+                if conn is not None:
+                    await conn.close()
+                    conn = None
+                if batch and self._config.idempotent:
+                    self._buffers[part] = batch + self._buffers[part]
+                else:
+                    self._record_background_error(exc)
+                self._in_flight[part] -= 1
+                if batch and self._config.idempotent:
                     self._events[part].set()
                     await asyncio.sleep(min(self._config.max_backoff_ms / 1000.0, 0.1))
 
@@ -209,6 +255,15 @@ class AsyncProducer:
     def unique_ack_count(self) -> int:
         return self._unique_ack_count
 
+    def _record_background_error(self, error: Exception) -> None:
+        if getattr(self, "_background_error", None) is None:
+            self._background_error = error
+
+    def _raise_background_error(self) -> None:
+        error = getattr(self, "_background_error", None)
+        if error is not None:
+            raise error
+
     async def flush(self) -> None:
         for event in self._events:
             event.set()
@@ -218,8 +273,11 @@ class AsyncProducer:
             if all(len(buf) == 0 for buf in self._buffers) and all(
                 count == 0 for count in self._in_flight
             ):
+                self._raise_background_error()
                 return
             await asyncio.sleep(0.01)
+        self._raise_background_error()
+        raise TimeoutError("producer flush timed out with buffered or in-flight messages")
 
     async def close(self) -> None:
         if self._closed:

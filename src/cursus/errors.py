@@ -11,11 +11,26 @@ class ProtocolError(CursusError):
 
 
 class BrokerError(CursusError):
-    def __init__(self, code: str, fields: dict[str, str] | None = None, response: str = "") -> None:
+    def __init__(
+        self,
+        code: str,
+        error_class: str = "",
+        retryable: bool = False,
+        message: str = "",
+        fields: dict[str, str] | None = None,
+        *,
+        response: str = "",
+    ) -> None:
+        rendered = message or response or code
+        super().__init__(rendered)
         self.code = code
-        self.fields = fields or {}
-        self.response = response
-        super().__init__(response or code)
+        self.error_class = error_class
+        self.retryable = retryable
+        self.fields = dict(fields or {})
+        self.response = response or rendered
+
+    def can_retry(self, *, idempotent: bool) -> bool:
+        return self.retryable and idempotent
 
 
 class AuthenticationRequiredError(BrokerError):

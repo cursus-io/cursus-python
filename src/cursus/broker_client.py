@@ -21,33 +21,49 @@ class BrokerCommandClient:
         backoff_ms: int = 100,
         tls_cert_path: str | None = None,
         tls_key_path: str | None = None,
+        compression_type: str = "none",
+        principal: str | None = None,
+        auth_token: str | None = None,
     ) -> None:
         self._brokers = brokers or ["localhost:9000"]
         self._timeout_ms = timeout_ms
-        self._max_retries = max(1, max_retries)
+        if max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
+        if bool(principal) != bool(auth_token):
+            raise ValueError("principal and auth_token must be configured together")
+        self._max_attempts = max_retries + 1
         self._backoff_ms = max(0, backoff_ms)
         self._tls_cert_path = tls_cert_path
         self._tls_key_path = tls_key_path
+        self._compression_type = compression_type
+        self._principal = principal
+        self._auth_token = auth_token
         self._coordinators: dict[str, str] = {}
 
-    def send_any(self, cmd: str, *, operation: str) -> str:
+    def send_any(self, cmd: str, *, operation: str, retry_ambiguous: bool = True) -> str:
         last_error: Exception | None = None
-        for attempt in range(self._max_retries):
+        for attempt in range(self._max_attempts):
             for addr in self._brokers:
                 try:
                     resp = self._send_to_addr(addr, cmd)
                     require_ok(resp, operation=operation)
                     return resp
-                except BrokerError:
-                    raise
+                except BrokerError as exc:
+                    if not exc.retryable or not retry_ambiguous:
+                        raise
+                    last_error = exc
                 except Exception as exc:
+                    if not retry_ambiguous:
+                        raise ConnectionError(
+                            f"{operation} outcome is unknown and was not retried: {exc}"
+                        ) from exc
                     last_error = exc
             self._sleep_backoff(attempt)
         raise ConnectionError(f"{operation} failed after retries: {last_error}")
 
     def send_transaction_coordinator(self, transactional_id: str, cmd: str) -> str:
         last_response = ""
-        for attempt in range(self._max_retries):
+        for attempt in range(self._max_attempts):
             addr = self._coordinators.get(transactional_id) or self._brokers[0]
             resp = self._send_to_addr(addr, cmd)
             last_response = resp
@@ -79,6 +95,9 @@ class BrokerCommandClient:
             timeout_ms=self._timeout_ms,
             tls_cert_path=self._tls_cert_path,
             tls_key_path=self._tls_key_path,
+            compression_type=self._compression_type,
+            principal=self._principal,
+            auth_token=self._auth_token,
         )
         try:
             conn.connect()
