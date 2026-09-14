@@ -116,6 +116,12 @@ class _PostgresStores:
         )
 
     def load_for_update(self, saga_type: str, saga_id: str) -> SagaState | None:
+        # A row lock protects established runs. The advisory lock also covers
+        # the first event, before a state row exists to lock.
+        self._connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (saga_type, saga_id),
+        )
         row = self._connection.execute(
             """SELECT association_key,correlation_id,run_id::text,next_sequence,status,outcome,
                       step_id,
