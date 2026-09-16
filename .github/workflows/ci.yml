@@ -82,6 +82,35 @@ jobs:
       - name: Verify transactional Saga adapters and history outbox retry
         run: uv run pytest tests/integration/test_sagapg.py tests/integration/test_sagamysql.py -v
 
+  event-store-e2e:
+    name: Event sourcing Broker E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout Cursus Broker
+        uses: actions/checkout@v7
+        with:
+          repository: cursus-io/cursus
+          path: cursus-broker
+      - name: Start Cursus Broker
+        working-directory: cursus-broker/test/e2e
+        run: docker compose up --build --detach --wait
+      - uses: astral-sh/setup-uv@v7
+      - run: uv python install 3.12
+      - run: uv sync --extra dev
+      - name: Verify EventStore append, conflict, snapshot, and replay
+        env:
+          CURSUS_TEST_BROKER_ADDR: localhost:10000
+        run: uv run pytest tests/integration/test_eventstore.py -v
+      - name: Collect Broker logs
+        if: always()
+        working-directory: cursus-broker/test/e2e
+        run: docker compose logs --no-color
+      - name: Stop Cursus Broker
+        if: always()
+        working-directory: cursus-broker/test/e2e
+        run: docker compose down --volumes --remove-orphans
+
   dco:
     name: DCO
     runs-on: ubuntu-latest
