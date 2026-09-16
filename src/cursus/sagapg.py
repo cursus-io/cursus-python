@@ -67,8 +67,8 @@ class PostgresSagaTransaction:
             connection = _connect(self._dsn)
             try:
                 connection.execute("BEGIN ISOLATION LEVEL SERIALIZABLE")
-                stores = _PostgresStores(connection, self._history_topic)
-                result = operation(stores)
+                store = _PostgresStores(connection, self._history_topic)
+                result = operation(SagaTransactionStores(store, store, store, store))
                 connection.commit()
                 return result
             except Exception as exc:
@@ -248,7 +248,7 @@ class _PostgresStores:
                 source_event_id,correlation_id,causation_id,source_topic,source_partition,source_offset,
                 aggregate_type,aggregate_id,aggregate_version,payload,error)
                VALUES (%s::uuid,%s,%s,%s,%s,%s,%s::uuid,%s,%s,%s,%s,%s,%s,
-                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (
                 event.history_event_id,
                 event.history_schema_version,

@@ -141,7 +141,7 @@ class _MySQLStores:
     def load_for_update(self, saga_type: str, saga_id: str) -> SagaState | None:
         # MySQL named locks serialize first creation, when no state row exists.
         lock = self._execute(
-            "SELECT GET_LOCK(CONCAT('cursus:saga:', SHA2(CONCAT(%s,':',%s),256)), 10)",
+            "SELECT GET_LOCK(SHA2(CONCAT(%s,':',%s),256), 10)",
             (saga_type, saga_id),
         ).fetchone()
         if lock is None or lock[0] != 1:
