@@ -49,9 +49,7 @@ from cursus.saga import (
     CompensationState,
     EffectState,
     SagaDefinition,
-    SagaManager,
     SagaState,
-    compensation_command,
 )
 from cursus.transaction import TransactionalProducer
 from cursus.types import (
@@ -126,8 +124,6 @@ __all__ = [
     "CompensationState",
     "Command",
     "SagaDefinition",
-    "SagaManager",
-    "compensation_command",
     "OffsetClient",
     "TransactionalProducer",
     "AsyncProducer",

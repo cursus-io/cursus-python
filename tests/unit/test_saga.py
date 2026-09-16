@@ -7,9 +7,14 @@ import pytest
 
 from cursus.saga import (
     COMMAND_ENQUEUED,
+    COMMAND_FAILED,
     COMMAND_SUCCEEDED,
     COMPENSATED,
+    COMPENSATION_FAILED,
     RUN_COMPENSATED,
+    RUN_FAILED,
+    RUN_STARTED,
+    STEP_FAILED,
     WAITING,
     Command,
     EventEnvelope,
@@ -154,6 +159,98 @@ def test_rollback_removes_success_history_then_records_failure_in_new_transactio
         saga.handle(event())
     assert transaction.stores.history == []
     assert ("orders", "event-1") in transaction.stores.failed
+
+
+def test_rollback_of_an_existing_run_records_step_failure_in_a_new_transaction():
+    transaction = MemoryTransaction()
+    saga = manager(transaction)
+    saga.handle(event("event-1"))
+    before = len(transaction.stores.history)
+
+    def failing_handler(_state, _event):
+        raise RuntimeError("reserve service unavailable")
+
+    saga.definition.handlers["OrderRetry"] = failing_handler
+    with pytest.raises(RuntimeError, match="reserve service unavailable"):
+        saga.handle(EventEnvelope("event-2", "OrderRetry", association_key="order-42"))
+
+    assert len(transaction.stores.history) == before + 1
+    failed = transaction.stores.history[-1]
+    assert failed.event_type == STEP_FAILED
+    assert failed.error == "reserve service unavailable"
+    assert failed.sequence == before + 1
+
+
+def test_failed_effect_and_failed_compensation_have_terminal_history_events():
+    transaction = MemoryTransaction()
+    saga = manager(transaction)
+    saga.handle(event())
+
+    saga.record_effect_result("order-42", "reserve:1", False, RuntimeError("declined"))
+    saga.start_compensation("order-42", "release", RuntimeError("declined"))
+    saga.fail_compensation("order-42", RuntimeError("release failed"))
+
+    assert [entry.event_type for entry in transaction.stores.history][-4:] == [
+        COMMAND_FAILED,
+        "compensation.started",
+        COMPENSATION_FAILED,
+        RUN_FAILED,
+    ]
+    state = transaction.stores.states[("orders", "order-42")]
+    assert state.outcome == "FAILED"
+
+
+def test_explicit_new_run_restarts_sequence_at_one_without_replaying_old_input():
+    transaction = MemoryTransaction()
+    saga = manager(transaction, lambda state, _event: setattr(state, "status", "COMPLETED") or [])
+    saga.handle(event())
+    first_run = transaction.stores.states[("orders", "order-42")].run_id
+    started = saga.start_new_run("order-42")
+
+    assert started.run_id != first_run
+    assert started.next_sequence == 1
+    assert transaction.stores.history[-1].event_type == RUN_STARTED
+    assert transaction.stores.history[-1].sequence == 1
+
+
+def test_history_omits_absent_optional_fields_and_rejects_non_positive_sequence():
+    now = datetime.fromisoformat("2026-09-15T00:00:00+00:00")
+    minimal = SagaHistoryEvent(
+        environment_id="test",
+        service_name="orders",
+        saga_type="orders",
+        saga_id="42",
+        run_id="de94b8eb-50c4-4a35-b324-59b9318af658",
+        sequence=1,
+        event_type=RUN_STARTED,
+        occurred_at=now,
+        recorded_at=now,
+    ).to_dict()
+    assert set(minimal) == {
+        "history_schema_version",
+        "history_event_id",
+        "environment_id",
+        "service_name",
+        "saga_type",
+        "saga_id",
+        "run_id",
+        "sequence",
+        "event_type",
+        "occurred_at",
+        "recorded_at",
+    }
+    with pytest.raises(ValueError, match="positive"):
+        SagaHistoryEvent(
+            environment_id="test",
+            service_name="orders",
+            saga_type="orders",
+            saga_id="42",
+            run_id="de94b8eb-50c4-4a35-b324-59b9318af658",
+            sequence=0,
+            event_type=RUN_STARTED,
+            occurred_at=now,
+            recorded_at=now,
+        )
 
 
 def test_compensation_records_terminal_outcome():

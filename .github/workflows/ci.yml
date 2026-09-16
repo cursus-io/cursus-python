@@ -46,6 +46,42 @@ jobs:
       - name: Unit tests
         run: uv run pytest tests/unit/ -v
 
+  saga-db-integration:
+    name: Saga PostgreSQL + MySQL integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cursus
+          POSTGRES_PASSWORD: cursus
+          POSTGRES_DB: cursus
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cursus -d cursus"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: cursus
+          MYSQL_USER: cursus
+          MYSQL_PASSWORD: cursus
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -uroot -proot"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      CURSUS_SAGA_POSTGRES_DSN: postgresql://cursus:cursus@localhost:5432/cursus
+      CURSUS_SAGA_MYSQL_DSN: mysql://cursus:cursus@localhost:3306/cursus
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv python install 3.12
+      - run: uv sync --extra dev --extra postgres --extra mysql
+      - name: Verify transactional Saga adapters and history outbox retry
+        run: uv run pytest tests/integration/test_sagapg.py tests/integration/test_sagamysql.py -v
+
   dco:
     name: DCO
     runs-on: ubuntu-latest
