@@ -85,6 +85,17 @@ jobs:
   event-store-e2e:
     name: Event sourcing Broker E2E
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cursus
+          POSTGRES_PASSWORD: cursus
+          POSTGRES_DB: cursus
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cursus -d cursus"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v7
       - name: Checkout Cursus Broker
@@ -101,7 +112,11 @@ jobs:
       - name: Verify EventStore append, conflict, snapshot, and replay
         env:
           CURSUS_TEST_BROKER_ADDR: localhost:10000
-        run: uv run pytest tests/integration/test_eventstore.py -v
+          CURSUS_SAGA_BROKER_ADDR: localhost:10000
+          CURSUS_SAGA_POSTGRES_DSN: postgresql://cursus:cursus@localhost:5432/cursus
+        run: >-
+          uv run pytest tests/integration/test_eventstore.py
+          tests/integration/test_saga_history_broker_e2e.py -v
       - name: Collect Broker logs
         if: always()
         working-directory: cursus-broker/test/e2e

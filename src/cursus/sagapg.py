@@ -292,6 +292,27 @@ class HistoryPublisher:
         raise NotImplementedError
 
 
+class CursusHistoryPublisher(HistoryPublisher):
+    """Publish history with a configured Cursus :class:`Producer`.
+
+    The producer remains application-owned and must be configured for exactly
+    ``topic``. A history event ID is used as the message key so a downstream
+    collector can safely deduplicate at-least-once redelivery.
+    """
+
+    def __init__(self, producer: Any, topic: str) -> None:
+        if not topic:
+            raise ValueError("history topic is required")
+        self._producer, self._topic = producer, topic
+
+    def publish(self, topic: str, payload: str) -> None:
+        if topic != self._topic:
+            raise ValueError("history publisher topic does not match the configured topic")
+        event_id = json.loads(payload)["history_event_id"]
+        self._producer.send(payload, key=event_id)
+        self._producer.flush()
+
+
 class HistoryOutboxPublisher:
     """Lease/retry worker with at-least-once delivery and stable event IDs."""
 
