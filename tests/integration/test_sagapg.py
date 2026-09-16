@@ -83,6 +83,19 @@ def test_postgres_transaction_persists_all_stores_and_retries_history_outbox():
         (saga_id, f"pg-contract-event-{saga_id}", saga_id, saga_id, saga_id),
     )
     assert counts == (1, 1, 1, 5, 5)
+    (run_id,) = _row(
+        "SELECT run_id::text FROM cursus_saga_history WHERE saga_id=%s ORDER BY sequence LIMIT 1",
+        (saga_id,),
+    )
+    with pytest.raises(Exception):
+        _execute(
+            """INSERT INTO cursus_saga_history
+               (history_event_id,history_schema_version,environment_id,service_name,saga_type,saga_id,
+                run_id,sequence,event_type,occurred_at,recorded_at)
+               VALUES (%s::uuid,1,'test','orders','postgres-contract',%s,%s::uuid,
+                       1,'run.started',NOW(),NOW())""",
+            (str(uuid4()), saga_id, run_id),
+        )
 
     publisher = RecordingPublisher(failures=1)
     worker = HistoryOutboxPublisher(DSN, publisher)
