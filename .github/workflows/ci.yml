@@ -108,7 +108,7 @@ jobs:
         run: docker compose up --build --detach --wait
       - uses: astral-sh/setup-uv@v7
       - run: uv python install 3.12
-      - run: uv sync --extra dev
+      - run: uv sync --extra dev --extra postgres
       - name: Verify EventStore append, conflict, snapshot, and replay
         env:
           CURSUS_TEST_BROKER_ADDR: localhost:10000

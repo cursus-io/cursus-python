@@ -335,7 +335,7 @@ class HistoryOutboxPublisher:
             cursor.execute("START TRANSACTION")
             cursor.execute("""SELECT history_event_id,topic_name,CAST(payload AS CHAR) FROM cursus_saga_history_outbox
                 WHERE status='PENDING' OR (status='PUBLISHING' AND lease_expires_at < UTC_TIMESTAMP(6))
-                ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1""")
+                ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED""")
             row = cursor.fetchone()
             if row is None:
                 connection.rollback()
