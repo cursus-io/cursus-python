@@ -12,7 +12,7 @@ import json
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 from cursus.saga import (
@@ -121,7 +121,7 @@ class _MySQLStores:
             "VALUES (%s,%s,'CLAIMED','',UTC_TIMESTAMP(6))",
             (consumer_name, event_id),
         )
-        return result.rowcount == 1
+        return cast(int, result.rowcount) == 1
 
     def complete(self, consumer_name: str, event_id: str) -> None:
         self._execute(

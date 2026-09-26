@@ -199,7 +199,7 @@ class CommandBuilder:
         return (
             f"SEND_OFFSETS_TO_TXN transactional_id={transactional_id} producerId={producer_id} "
             f"epoch={epoch} topic={topic} group={group} member={member} "
-            f"generation={generation} {parts}"
+            f"generation={generation} offsets={parts}"
         )
 
     @staticmethod

@@ -225,9 +225,14 @@ class BrokerSagaRuntime:
         now = _utcnow()
         if new_run:
             drafts = [BrokerSagaHistoryDraft(RUN_STARTED), *drafts]
-        prepared = [self._prepare_command(record.state, input.event.event_id, index, command) for index, command in enumerate(commands)]
+        prepared = [
+            self._prepare_command(record.state, input.event.event_id, index, command)
+            for index, command in enumerate(commands)
+        ]
         drafts.extend(
-            BrokerSagaHistoryDraft(COMMAND_ENQUEUED, command.type, command=command, payload=command.payload)
+            BrokerSagaHistoryDraft(
+                COMMAND_ENQUEUED, command.type, command=command, payload=command.payload
+            )
             for command in prepared
         )
         record.processed_event_ids.append(input.event.event_id)
@@ -240,17 +245,27 @@ class BrokerSagaRuntime:
         if not stream.events:
             return BrokerSagaStateRecord("", "", "", SagaState("", "", "")), 0
         record = BrokerSagaStateRecord.from_json(stream.events[-1].payload)
-        if (record.saga_type, record.saga_id, record.run_id) != (self.config.saga_type, saga_id, run_id):
+        if (record.saga_type, record.saga_id, record.run_id) != (
+            self.config.saga_type,
+            saga_id,
+            run_id,
+        ):
             raise ValueError("broker saga state stream identity mismatch")
         return record, stream.events[-1].version
 
-    def _prepare_command(self, state: SagaState, causation_id: str, index: int, command: Command) -> Command:
+    def _prepare_command(
+        self, state: SagaState, causation_id: str, index: int, command: Command
+    ) -> Command:
         command.effect_id = command.effect_id or f"{causation_id}:{index}"
-        command.command_id = command.command_id or _id("command", self.config.saga_type, state.saga_id, state.run_id, command.effect_id)
+        command.command_id = command.command_id or _id(
+            "command", self.config.saga_type, state.saga_id, state.run_id, command.effect_id
+        )
         command.saga_id = command.saga_id or state.saga_id
         command.correlation_id = command.correlation_id or state.correlation_id
         command.causation_id = command.causation_id or causation_id
-        effect = state.effects.get(command.effect_id) or EffectState(command.effect_id, command.type)
+        effect = state.effects.get(command.effect_id) or EffectState(
+            command.effect_id, command.type
+        )
         effect.step_id = command.type
         effect.status = PENDING
         effect.command_id = command.command_id
@@ -260,7 +275,13 @@ class BrokerSagaRuntime:
         state.effects[command.effect_id] = effect
         return command
 
-    def _materialize_history(self, state: SagaState, input: BrokerSagaInput, drafts: list[BrokerSagaHistoryDraft], now: datetime) -> list[SagaHistoryEvent]:
+    def _materialize_history(
+        self,
+        state: SagaState,
+        input: BrokerSagaInput,
+        drafts: list[BrokerSagaHistoryDraft],
+        now: datetime,
+    ) -> list[SagaHistoryEvent]:
         history: list[SagaHistoryEvent] = []
         for draft in drafts:
             state.next_sequence += 1
@@ -276,7 +297,13 @@ class BrokerSagaRuntime:
                     event_type=draft.event_type,
                     occurred_at=now,
                     recorded_at=now,
-                    history_event_id=_id("history", self.config.saga_type, state.saga_id, state.run_id, str(state.next_sequence)),
+                    history_event_id=_id(
+                        "history",
+                        self.config.saga_type,
+                        state.saga_id,
+                        state.run_id,
+                        str(state.next_sequence),
+                    ),
                     step_id=draft.step_id,
                     attempt=draft.attempt,
                     command_id=command.command_id,
@@ -299,52 +326,171 @@ class BrokerSagaRuntime:
     def _commit_duplicate(self, input: BrokerSagaInput) -> None:
         producer = self._producer_factory(self._transaction_id(input, "duplicate"))
         with producer:
-            producer.send_offsets_to_transaction(input.topic, input.group, input.member, input.generation, {input.partition: input.offset + 1})
+            producer.send_offsets_to_transaction(
+                input.topic,
+                input.group,
+                input.member,
+                input.generation,
+                {input.partition: input.offset + 1},
+            )
 
-    def _commit(self, input: BrokerSagaInput, record: BrokerSagaStateRecord, expected_version: int, commands: list[Command], history: list[SagaHistoryEvent], *, acknowledge: bool) -> None:
+    def _commit(
+        self,
+        input: BrokerSagaInput,
+        record: BrokerSagaStateRecord,
+        expected_version: int,
+        commands: list[Command],
+        history: list[SagaHistoryEvent],
+        *,
+        acknowledge: bool,
+    ) -> None:
         producer = self._producer_factory(self._transaction_id(input, "apply"))
         with producer:
-            producer.append_stream(self.config.topics.state, self.stream_key(record.saga_id, record.run_id), expected_version, record.to_json(), event_type="saga.state.transitioned")
+            producer.append_stream(
+                self.config.topics.state,
+                self.stream_key(record.saga_id, record.run_id),
+                expected_version,
+                record.to_json(),
+                event_type="saga.state.transitioned",
+            )
             for command in commands:
-                producer.publish(self.config.topics.commands, BrokerSagaCommandEnvelope(command.command_id, command.effect_id, command.type, self.config.saga_type, record.saga_id, record.run_id, command.correlation_id, command.causation_id, command.payload).to_json(), key=command.command_id)
+                producer.publish(
+                    self.config.topics.commands,
+                    BrokerSagaCommandEnvelope(
+                        command.command_id,
+                        command.effect_id,
+                        command.type,
+                        self.config.saga_type,
+                        record.saga_id,
+                        record.run_id,
+                        command.correlation_id,
+                        command.causation_id,
+                        command.payload,
+                    ).to_json(),
+                    key=command.command_id,
+                )
             for event in history:
-                producer.publish(self.config.topics.history, event.to_json(), key=event.history_event_id)
+                producer.publish(
+                    self.config.topics.history, event.to_json(), key=event.history_event_id
+                )
             if acknowledge:
-                producer.send_offsets_to_transaction(input.topic, input.group, input.member, input.generation, {input.partition: input.offset + 1})
+                producer.send_offsets_to_transaction(
+                    input.topic,
+                    input.group,
+                    input.member,
+                    input.generation,
+                    {input.partition: input.offset + 1},
+                )
 
-    def _record_failure(self, input: BrokerSagaInput, record: BrokerSagaStateRecord, version: int, cause: Exception) -> None:
+    def _record_failure(
+        self, input: BrokerSagaInput, record: BrokerSagaStateRecord, version: int, cause: Exception
+    ) -> None:
         now = _utcnow()
         record.state.retry_count += 1
         record.state.last_error = str(cause)
         record.state.updated_at, record.recorded_at = now, now
-        history = self._materialize_history(record.state, input, [BrokerSagaHistoryDraft(STEP_FAILED, record.state.step_id, record.state.retry_count, error=str(cause))], now)
+        history = self._materialize_history(
+            record.state,
+            input,
+            [
+                BrokerSagaHistoryDraft(
+                    STEP_FAILED, record.state.step_id, record.state.retry_count, error=str(cause)
+                )
+            ],
+            now,
+        )
         self._commit_state_only(input, record, version + 1, history)
 
-    def _commit_state_only(self, input: BrokerSagaInput, record: BrokerSagaStateRecord, expected_version: int, history: list[SagaHistoryEvent]) -> None:
+    def _commit_state_only(
+        self,
+        input: BrokerSagaInput,
+        record: BrokerSagaStateRecord,
+        expected_version: int,
+        history: list[SagaHistoryEvent],
+    ) -> None:
         producer = self._producer_factory(self._transaction_id(input, "failure"))
         with producer:
-            producer.append_stream(self.config.topics.state, self.stream_key(record.saga_id, record.run_id), expected_version, record.to_json(), event_type="saga.state.failed")
+            producer.append_stream(
+                self.config.topics.state,
+                self.stream_key(record.saga_id, record.run_id),
+                expected_version,
+                record.to_json(),
+                event_type="saga.state.failed",
+            )
             for event in history:
-                producer.publish(self.config.topics.history, event.to_json(), key=event.history_event_id)
+                producer.publish(
+                    self.config.topics.history, event.to_json(), key=event.history_event_id
+                )
 
     def _transaction_id(self, input: BrokerSagaInput, phase: str) -> str:
-        return "saga-" + _id("transaction", self.config.service_name, input.topic, str(input.partition), str(input.offset), phase)
+        return "saga-" + _id(
+            "transaction",
+            self.config.service_name,
+            input.topic,
+            str(input.partition),
+            str(input.offset),
+            phase,
+        )
 
 
 def _state_to_dict(state: SagaState) -> dict[str, Any]:
     return {
-        "saga_id": state.saga_id, "saga_type": state.saga_type, "association_key": state.association_key,
-        "correlation_id": state.correlation_id, "status": state.status, "step_id": state.step_id,
-        "data": state.data, "retry_count": state.retry_count, "last_error": state.last_error,
-        "run_id": state.run_id, "next_sequence": state.next_sequence, "outcome": state.outcome,
+        "saga_id": state.saga_id,
+        "saga_type": state.saga_type,
+        "association_key": state.association_key,
+        "correlation_id": state.correlation_id,
+        "status": state.status,
+        "step_id": state.step_id,
+        "data": state.data,
+        "retry_count": state.retry_count,
+        "last_error": state.last_error,
+        "run_id": state.run_id,
+        "next_sequence": state.next_sequence,
+        "outcome": state.outcome,
         "updated_at": _stamp(state.updated_at),
-        "effects": {key: {"effect_id": value.effect_id, "step_id": value.step_id, "status": value.status, "command_id": value.command_id, "published": value.published, "attempts": value.attempts, "last_error": value.last_error, "updated_at": _stamp(value.updated_at)} for key, value in state.effects.items()},
-        "compensation": None if state.compensation is None else {"step_id": state.compensation.step_id, "status": state.compensation.status, "attempts": state.compensation.attempts, "last_error": state.compensation.last_error, "updated_at": _stamp(state.compensation.updated_at)},
+        "effects": {
+            key: {
+                "effect_id": value.effect_id,
+                "step_id": value.step_id,
+                "status": value.status,
+                "command_id": value.command_id,
+                "published": value.published,
+                "attempts": value.attempts,
+                "last_error": value.last_error,
+                "updated_at": _stamp(value.updated_at),
+            }
+            for key, value in state.effects.items()
+        },
+        "compensation": None
+        if state.compensation is None
+        else {
+            "step_id": state.compensation.step_id,
+            "status": state.compensation.status,
+            "attempts": state.compensation.attempts,
+            "last_error": state.compensation.last_error,
+            "updated_at": _stamp(state.compensation.updated_at),
+        },
     }
 
 
 def _state_from_dict(value: dict[str, Any]) -> SagaState:
-    effects = {key: EffectState(**{**item, "updated_at": _parse_stamp(item["updated_at"])}) for key, item in value.get("effects", {}).items()}
+    effects = {
+        key: EffectState(**{**item, "updated_at": _parse_stamp(item["updated_at"])})
+        for key, item in value.get("effects", {}).items()
+    }
     compensation_value = value.get("compensation")
-    compensation = None if compensation_value is None else CompensationState(**{**compensation_value, "updated_at": _parse_stamp(compensation_value["updated_at"])})
-    return SagaState(**{**value, "updated_at": _parse_stamp(value["updated_at"]), "effects": effects, "compensation": compensation})
+    compensation = (
+        None
+        if compensation_value is None
+        else CompensationState(
+            **{**compensation_value, "updated_at": _parse_stamp(compensation_value["updated_at"])}
+        )
+    )
+    return SagaState(
+        **{
+            **value,
+            "updated_at": _parse_stamp(value["updated_at"]),
+            "effects": effects,
+            "compensation": compensation,
+        }
+    )

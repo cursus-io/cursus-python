@@ -11,10 +11,11 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 from uuid import uuid4
 
 HISTORY_SCHEMA_VERSION = 1
+_T = TypeVar("_T")
 RUN_STARTED = "run.started"
 RUN_WAITING = "run.waiting"
 STEP_STARTED = "step.started"
@@ -242,7 +243,7 @@ class SagaTransactionStores:
 
 
 class SagaTransaction(Protocol):
-    def run(self, operation: Callable[[SagaTransactionStores], Any]) -> Any: ...
+    def run(self, operation: Callable[[SagaTransactionStores], _T]) -> _T: ...
 
 
 SagaHandler = Callable[[SagaState, EventEnvelope], list[Command]]

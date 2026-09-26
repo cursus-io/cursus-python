@@ -164,7 +164,7 @@ def test_transaction_commands_exact_wire():
         "tx-1", "p1", 2, "input", "grp", "m1", 4, {2: 202, 0: 101}
     ) == (
         "SEND_OFFSETS_TO_TXN transactional_id=tx-1 producerId=p1 epoch=2 topic=input "
-        "group=grp member=m1 generation=4 P0:101,P2:202"
+        "group=grp member=m1 generation=4 offsets=P0:101,P2:202"
     )
     assert CommandBuilder.end_txn("tx-1", "p1", 2, commit=False) == (
         "END_TXN transactional_id=tx-1 producerId=p1 epoch=2 result=abort"
@@ -187,5 +187,5 @@ def test_build_transactional_append_stream_command() -> None:
     ) == (
         "TXN_APPEND_STREAM transactional_id=tx-1 topic=cursus.saga-state.v1 "
         "key=orders:order-42:run-1 expected_version=3 producerId=p1 seqNum=7 epoch=2 "
-        "schema_version=1 event_type=saga.state.transitioned message={\"status\":\"WAITING\"}"
+        'schema_version=1 event_type=saga.state.transitioned message={"status":"WAITING"}'
     )

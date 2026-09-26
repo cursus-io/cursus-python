@@ -39,4 +39,7 @@ def test_broker_saga_topics_reject_reserved_name() -> None:
     with pytest.raises(ValueError, match="public"):
         BrokerSagaTopics(inbox="__internal")
 
-    assert BrokerSagaRuntimeConfig("orders", "test", "orders").topics.history == "cursus.saga-history.v1"
+    assert (
+        BrokerSagaRuntimeConfig("orders", "test", "orders").topics.history
+        == "cursus.saga-history.v1"
+    )

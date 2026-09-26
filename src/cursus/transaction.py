@@ -35,7 +35,10 @@ class TransactionalProducer:
         self.transactional_id = transactional_id
         self.producer_id = ""
         self.epoch = 0
-        self._seq_num = 0
+        # The broker fences idempotent sequences per topic-partition. A
+        # broker-native Saga writes state, commands, and history to separate
+        # topics, so a global counter would make a later topic start at 2.
+        self._seq_num_by_topic: dict[str, int] = {}
         self._principal = principal
         self._auth_token = auth_token
         self._client = BrokerCommandClient(
@@ -70,7 +73,7 @@ class TransactionalProducer:
         session = decode_producer_session(resp)
         self.producer_id = session.producer_id
         self.epoch = session.epoch
-        self._seq_num = 0
+        self._seq_num_by_topic.clear()
         return session
 
     def begin_transaction(self) -> None:
@@ -91,13 +94,13 @@ class TransactionalProducer:
     ) -> None:
         """Stage one record in the open transaction."""
         self._ensure_session()
-        self._seq_num += 1
+        sequence = self._next_sequence(topic)
         cmd = CommandBuilder.txn_publish(
             self.transactional_id,
             topic,
             partition,
             self.producer_id,
-            self._seq_num,
+            sequence,
             self.epoch,
             message,
             key=key,
@@ -126,7 +129,7 @@ class TransactionalProducer:
         if "\n" in payload or "\r" in payload or any(char.isspace() for char in metadata):
             raise ValueError("payload line breaks and metadata whitespace are not supported")
         self._ensure_session()
-        self._seq_num += 1
+        sequence = self._next_sequence(topic)
         resp = self._send(
             CommandBuilder.txn_append_stream(
                 self.transactional_id,
@@ -134,7 +137,7 @@ class TransactionalProducer:
                 key,
                 expected_version,
                 self.producer_id,
-                self._seq_num,
+                sequence,
                 self.epoch,
                 payload,
                 event_type=event_type,
@@ -195,6 +198,11 @@ class TransactionalProducer:
     def _ensure_session(self) -> None:
         if not self.producer_id:
             self.init_producer_id()
+
+    def _next_sequence(self, topic: str) -> int:
+        sequence = self._seq_num_by_topic.get(topic, 0) + 1
+        self._seq_num_by_topic[topic] = sequence
+        return sequence
 
     def _send(self, cmd: str) -> str:
         resp = self._client.send_transaction_coordinator(self.transactional_id, cmd)

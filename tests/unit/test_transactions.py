@@ -90,7 +90,7 @@ def test_send_offsets_sorted_and_commit_abort_idempotent_success():
             (
                 "bootstrap:9000",
                 "SEND_OFFSETS_TO_TXN transactional_id=tx-1 producerId=p1 epoch=2 topic=input "
-                "group=grp member=m1 generation=7 P0:11,P2:21",
+                "group=grp member=m1 generation=7 offsets=P0:11,P2:21",
             ): ["OK transactional_id=tx-1 staged_offsets=2"],
             (
                 "bootstrap:9000",
