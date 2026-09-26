@@ -82,7 +82,9 @@ class SagaHistoryEvent:
     def __post_init__(self) -> None:
         if self.history_schema_version != HISTORY_SCHEMA_VERSION:
             raise ValueError("history_schema_version must be 1")
-        if not all((self.environment_id, self.service_name, self.saga_type, self.saga_id, self.run_id)):
+        if not all(
+            (self.environment_id, self.service_name, self.saga_type, self.saga_id, self.run_id)
+        ):
             raise ValueError("Saga history identity fields are required")
         if self.sequence < 1:
             raise ValueError("sequence must be positive")
@@ -124,7 +126,9 @@ class SagaHistoryEvent:
             "source_offset": None if self.source_offset is None else str(self.source_offset),
             "aggregate_type": self.aggregate_type,
             "aggregate_id": self.aggregate_id,
-            "aggregate_version": None if self.aggregate_version is None else str(self.aggregate_version),
+            "aggregate_version": None
+            if self.aggregate_version is None
+            else str(self.aggregate_version),
             "payload": self.payload,
             "error": self.error,
         }
