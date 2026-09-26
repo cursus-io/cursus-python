@@ -55,8 +55,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: cursus-io/cursus
-          # TXN_APPEND_STREAM is introduced by Core PR #209. Return to main after it merges.
-          ref: feat/saga-history-v1-rebased
+          # TXN_APPEND_STREAM landed in Core main via PR #209.
+          ref: main
           path: cursus-broker
       - name: Start Cursus Broker
         working-directory: cursus-broker/test/e2e
