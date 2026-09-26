@@ -144,9 +144,7 @@ def _decode_record(data: bytes) -> dict[str, Any]:
         raise ProtocolError(f"unsupported record version: {version}")
     presence = r.read_uint64()
     known_mask = (
-        _LEGACY_RECORD_KNOWN_MASK
-        if version == _LEGACY_RECORD_VERSION
-        else _RECORD_KNOWN_MASK
+        _LEGACY_RECORD_KNOWN_MASK if version == _LEGACY_RECORD_VERSION else _RECORD_KNOWN_MASK
     )
     if presence & ~known_mask:
         raise ProtocolError(f"record contains unknown presence bits: 0x{presence:X}")
