@@ -156,6 +156,35 @@ class CommandBuilder:
         return CommandBuilder._append_auth(cmd, principal, auth_token)
 
     @staticmethod
+    def txn_append_stream(
+        transactional_id: str,
+        topic: str,
+        key: str,
+        expected_version: int,
+        producer_id: str,
+        seq_num: int,
+        epoch: int,
+        payload: str,
+        *,
+        event_type: str = "",
+        schema_version: int = 1,
+        metadata: str = "",
+        principal: str | None = None,
+        auth_token: str | None = None,
+    ) -> str:
+        cmd = (
+            f"TXN_APPEND_STREAM transactional_id={transactional_id} topic={topic} key={key} "
+            f"expected_version={expected_version} producerId={producer_id} seqNum={seq_num} "
+            f"epoch={epoch} schema_version={schema_version}"
+        )
+        if event_type:
+            cmd += f" event_type={event_type}"
+        if metadata:
+            cmd += f" metadata={metadata}"
+        cmd += f" message={payload}"
+        return CommandBuilder._append_auth(cmd, principal, auth_token)
+
+    @staticmethod
     def send_offsets_to_txn(
         transactional_id: str,
         producer_id: str,
@@ -170,7 +199,7 @@ class CommandBuilder:
         return (
             f"SEND_OFFSETS_TO_TXN transactional_id={transactional_id} producerId={producer_id} "
             f"epoch={epoch} topic={topic} group={group} member={member} "
-            f"generation={generation} {parts}"
+            f"generation={generation} offsets={parts}"
         )
 
     @staticmethod

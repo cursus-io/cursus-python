@@ -122,6 +122,11 @@ class Command(IntEnum):
     LEAVE_CLUSTER = 49
     HEARTBEAT_CLUSTER = 50
     REPLICA_CATCHUP = 51
+    AGGREGATE_REPLAY_PROOF = 52
+    AGGREGATE_EVENT_RANGE_READ = 53
+    TXN_APPEND_STREAM = 54
+    BROWSE_MESSAGES = 55
+    READ_STREAM_HISTORY = 56
 
 
 _COMMANDS = {command.name: command for command in Command if command is not Command.UNKNOWN}

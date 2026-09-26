@@ -23,7 +23,8 @@ from cursus.types import (
 )
 
 _BATCH_FLAG_IDEMPOTENT = 1
-_RECORD_VERSION = 2
+_RECORD_VERSION = 3
+_LEGACY_RECORD_VERSION = 2
 _RECORD_TIMESTAMP = 1 << 0
 _RECORD_PRODUCER = 1 << 1
 _RECORD_KEY = 1 << 2
@@ -39,7 +40,10 @@ _RECORD_CONTROL_BATCH_VERSION = 1 << 11
 _RECORD_CONTROL_COORDINATOR_EPOCH = 1 << 12
 _RECORD_CONTROL_KEY = 1 << 13
 _RECORD_CONTROL_VALUE = 1 << 14
-_RECORD_KNOWN_MASK = (1 << 15) - 1
+_RECORD_EVENT_ID = 1 << 15
+_RECORD_PAYLOAD_DIGEST = 1 << 16
+_LEGACY_RECORD_KNOWN_MASK = (1 << 15) - 1
+_RECORD_KNOWN_MASK = (1 << 17) - 1
 
 
 class _ByteReader:
@@ -136,10 +140,13 @@ def decode_batch(data: bytes) -> tuple[list[Message], str, int]:
 def _decode_record(data: bytes) -> dict[str, Any]:
     r = _ByteReader(data)
     version = r.read_uint16()
-    if version != _RECORD_VERSION:
+    if version not in (_RECORD_VERSION, _LEGACY_RECORD_VERSION):
         raise ProtocolError(f"unsupported record version: {version}")
     presence = r.read_uint64()
-    if presence & ~_RECORD_KNOWN_MASK:
+    known_mask = (
+        _LEGACY_RECORD_KNOWN_MASK if version == _LEGACY_RECORD_VERSION else _RECORD_KNOWN_MASK
+    )
+    if presence & ~known_mask:
         raise ProtocolError(f"record contains unknown presence bits: 0x{presence:X}")
     result: dict[str, Any] = {
         "topic": r.read_string(),
@@ -180,6 +187,10 @@ def _decode_record(data: bytes) -> dict[str, Any]:
         result["control_batch_key"] = r.read_bytes()
     if presence & _RECORD_CONTROL_VALUE:
         result["control_batch_value"] = r.read_bytes()
+    if version == _RECORD_VERSION and presence & _RECORD_EVENT_ID:
+        result["event_id"] = r.read_string()
+    if version == _RECORD_VERSION and presence & _RECORD_PAYLOAD_DIGEST:
+        result["payload_digest"] = r.read_string()
     r.finish()
     return result
 

@@ -46,6 +46,8 @@ class Message:
     control_batch_coordinator_epoch: int = 0
     control_batch_key: bytes | None = None
     control_batch_value: bytes | None = None
+    event_id: str = ""
+    payload_digest: str = ""
 
 
 @dataclass

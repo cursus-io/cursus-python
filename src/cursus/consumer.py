@@ -22,6 +22,20 @@ from cursus.protocol.encoder import encode_message
 from cursus.types import AutoOffsetReset, ConsumerMode, Message, OffsetRange, StreamControl
 
 
+class TransactionalOffsetMetadata:
+    """Active group membership needed by SEND_OFFSETS_TO_TXN.
+
+    A rebalance changes member/generation, so broker-native processors must
+    obtain this value for each input before opening their transaction.
+    """
+
+    def __init__(self, topic: str, group: str, member: str, generation: int) -> None:
+        self.topic = topic
+        self.group = group
+        self.member = member
+        self.generation = generation
+
+
 class Consumer:
     def __init__(self, config: ConsumerConfig, metrics: ClientMetrics | None = None) -> None:
         self._config = config
@@ -117,6 +131,17 @@ class Consumer:
                 yield msg
                 self._mark_processed(msg)
                 self._last_delivered = None
+
+    def transactional_offset_metadata(self) -> TransactionalOffsetMetadata:
+        """Return current group metadata or fail when no assignment is active."""
+        if not self._member_id or self._generation <= 0:
+            raise ConnectionError("consumer has no active group assignment")
+        return TransactionalOffsetMetadata(
+            self._config.topic,
+            self._config.group_id or "default-group",
+            self._member_id,
+            self._generation,
+        )
 
     def _connect_to_leader(self) -> SyncConnection:
         addrs = list(self._config.brokers)
@@ -538,6 +563,8 @@ class Consumer:
             self._offsets[partition] = control.offset
 
     def _mark_processed(self, msg: Message) -> None:
+        if not self._config.enable_auto_commit:
+            return
         self.metrics.increment("cursus.consumer.messages.processed")
         partition = msg.partition
         next_offset = msg.offset + 1

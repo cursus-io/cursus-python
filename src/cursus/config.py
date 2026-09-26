@@ -46,6 +46,9 @@ class ConsumerConfig:
     mode: ConsumerMode = ConsumerMode.STREAMING
     auto_offset_reset: AutoOffsetReset = AutoOffsetReset.EARLIEST
     isolation_level: IsolationLevel = IsolationLevel.READ_UNCOMMITTED
+    # Broker-native processors set this false and acknowledge each source
+    # record with SEND_OFFSETS_TO_TXN in their own broker transaction.
+    enable_auto_commit: bool = True
     auto_commit_interval_s: float = 5.0
     session_timeout_ms: int = 30000
     heartbeat_interval_ms: int = 3000
