@@ -17,7 +17,7 @@ from cursus.async_consumer import AsyncConsumer
 from cursus.async_eventstore import AsyncEventStore
 from cursus.async_producer import AsyncProducer
 from cursus.config import ConsumerConfig, ProducerConfig
-from cursus.consumer import Consumer
+from cursus.consumer import Consumer, TransactionalOffsetMetadata
 from cursus.errors import (
     AuthenticationRequiredError,
     AuthorizationDeniedError,
@@ -50,6 +50,15 @@ from cursus.saga import (
     EffectState,
     SagaDefinition,
     SagaState,
+)
+from cursus.broker_saga import (
+    BrokerSagaCommandEnvelope,
+    BrokerSagaHistoryDraft,
+    BrokerSagaInput,
+    BrokerSagaRuntime,
+    BrokerSagaRuntimeConfig,
+    BrokerSagaStateRecord,
+    BrokerSagaTopics,
 )
 from cursus.transaction import TransactionalProducer
 from cursus.types import (
@@ -109,6 +118,7 @@ __all__ = [
     "NotLeaderError",
     "Producer",
     "Consumer",
+    "TransactionalOffsetMetadata",
     "EventStore",
     "ClientMetrics",
     "MetricsSnapshot",
@@ -124,6 +134,13 @@ __all__ = [
     "CompensationState",
     "Command",
     "SagaDefinition",
+    "BrokerSagaTopics",
+    "BrokerSagaRuntimeConfig",
+    "BrokerSagaInput",
+    "BrokerSagaHistoryDraft",
+    "BrokerSagaStateRecord",
+    "BrokerSagaCommandEnvelope",
+    "BrokerSagaRuntime",
     "OffsetClient",
     "TransactionalProducer",
     "AsyncProducer",

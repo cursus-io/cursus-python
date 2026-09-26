@@ -170,3 +170,22 @@ def test_transaction_commands_exact_wire():
         "END_TXN transactional_id=tx-1 producerId=p1 epoch=2 result=abort"
     )
     assert CommandBuilder.txn_status("tx-1") == "TXN_STATUS transactional_id=tx-1"
+
+
+def test_build_transactional_append_stream_command() -> None:
+    assert CommandBuilder.txn_append_stream(
+        "tx-1",
+        "cursus.saga-state.v1",
+        "orders:order-42:run-1",
+        3,
+        "p1",
+        7,
+        2,
+        '{"status":"WAITING"}',
+        event_type="saga.state.transitioned",
+        schema_version=1,
+    ) == (
+        "TXN_APPEND_STREAM transactional_id=tx-1 topic=cursus.saga-state.v1 "
+        "key=orders:order-42:run-1 expected_version=3 producerId=p1 seqNum=7 epoch=2 "
+        "schema_version=1 event_type=saga.state.transitioned message={\"status\":\"WAITING\"}"
+    )

@@ -107,6 +107,45 @@ class TransactionalProducer:
         resp = self._send(cmd)
         require_ok(resp, operation="transactional publish")
 
+    def append_stream(
+        self,
+        topic: str,
+        key: str,
+        expected_version: int,
+        payload: str,
+        *,
+        event_type: str = "",
+        schema_version: int = 1,
+        metadata: str = "",
+    ) -> None:
+        """Append one version-checked stream event in the open broker transaction."""
+        if not topic or not key or expected_version <= 0 or not payload:
+            raise ValueError("topic, key, positive expected_version, and payload are required")
+        if any(char.isspace() for char in key) or any(char.isspace() for char in event_type):
+            raise ValueError("stream key and event_type must not contain whitespace")
+        if "\n" in payload or "\r" in payload or any(char.isspace() for char in metadata):
+            raise ValueError("payload line breaks and metadata whitespace are not supported")
+        self._ensure_session()
+        self._seq_num += 1
+        resp = self._send(
+            CommandBuilder.txn_append_stream(
+                self.transactional_id,
+                topic,
+                key,
+                expected_version,
+                self.producer_id,
+                self._seq_num,
+                self.epoch,
+                payload,
+                event_type=event_type,
+                schema_version=schema_version,
+                metadata=metadata,
+                principal=self._principal,
+                auth_token=self._auth_token,
+            )
+        )
+        require_ok(resp, operation="transactional append stream")
+
     def send_offsets_to_transaction(
         self,
         topic: str,
