@@ -249,7 +249,16 @@ class BrokerSagaRuntime:
     def _load(self, saga_id: str, run_id: str) -> tuple[BrokerSagaStateRecord, int]:
         stream = self._state_store.read_stream(self.stream_key(saga_id, run_id))
         if not stream.events:
-            return BrokerSagaStateRecord("", "", "", SagaState("", "", "")), 0
+            if stream.snapshot is None:
+                return BrokerSagaStateRecord("", "", "", SagaState("", "", "")), 0
+            record = BrokerSagaStateRecord.from_json(stream.snapshot.payload)
+            if (record.saga_type, record.saga_id, record.run_id) != (
+                self.config.saga_type,
+                saga_id,
+                run_id,
+            ):
+                raise ValueError("broker saga state snapshot identity mismatch")
+            return record, stream.snapshot.version
         record = BrokerSagaStateRecord.from_json(stream.events[-1].payload)
         if (record.saga_type, record.saga_id, record.run_id) != (
             self.config.saga_type,

@@ -63,7 +63,19 @@ class TransactionalProducer:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         if exc_type is None:
-            self.commit_transaction()
+            try:
+                self.commit_transaction()
+            except Exception:
+                # A failed commit may have left an OPEN transaction and its
+                # stream reservations behind.  Abort only after a fresh
+                # status read proves that outcome; an unavailable status must
+                # remain retryable rather than being guessed as an abort.
+                try:
+                    if self.status().state == "open":
+                        self.abort_transaction()
+                except Exception:
+                    pass
+                raise
         else:
             self.abort_transaction()
 
