@@ -53,11 +53,10 @@ from cursus.eventstore import EventStore
 from cursus.metrics import ClientMetrics, MetricsSnapshot, classify_error
 from cursus.offsets import OffsetClient
 from cursus.producer import Producer
-from cursus.saga import (
+from cursus.broker_saga_types import (
     Command,
     CompensationState,
     EffectState,
-    SagaDefinition,
     SagaState,
 )
 from cursus.transaction import TransactionalProducer
@@ -133,7 +132,6 @@ __all__ = [
     "EffectState",
     "CompensationState",
     "Command",
-    "SagaDefinition",
     "BrokerSagaTopics",
     "BrokerSagaRuntimeConfig",
     "BrokerSagaInput",

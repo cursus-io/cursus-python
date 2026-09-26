@@ -18,7 +18,7 @@ from cursus import (
     IsolationLevel,
     TransactionalProducer,
 )
-from cursus.saga import STEP_COMPLETED, WAITING
+from cursus.broker_saga_types import STEP_COMPLETED, WAITING
 
 
 def test_broker_saga_runtime_commits_state_history_command_and_offset(broker_addr):

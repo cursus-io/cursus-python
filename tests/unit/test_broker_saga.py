@@ -8,7 +8,7 @@ from cursus.broker_saga import (
     BrokerSagaTopics,
     _id,
 )
-from cursus.saga import SagaState
+from cursus.broker_saga_types import SagaState
 
 
 def test_broker_saga_state_record_round_trips_without_database() -> None:
