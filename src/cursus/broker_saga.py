@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid5
 
-from cursus.eventstore import EventStore
 from cursus.broker_saga_types import (
     COMMAND_ENQUEUED,
     PENDING,
@@ -27,6 +27,7 @@ from cursus.broker_saga_types import (
     SagaHistoryEvent,
     SagaState,
 )
+from cursus.eventstore import EventStore
 from cursus.transaction import TransactionalProducer
 
 _NAMESPACE = UUID("2ce850f6-b151-5e5a-a160-6b8d82527d54")
@@ -212,8 +213,12 @@ class BrokerSagaRuntime:
                     run_id=input.run_id,
                 ),
             )
+        # Preserve the last durable state until the handler completes. A failed
+        # handler may mutate the state object it receives, but those mutations
+        # must not become part of the retryable failure record.
+        transition_state = _clone_state(record.state)
         try:
-            commands, drafts = handler(record.state, input.event)
+            commands, drafts = handler(transition_state, input.event)
         except Exception as cause:
             if not new_run:
                 try:
@@ -222,6 +227,7 @@ class BrokerSagaRuntime:
                     pass
             raise
 
+        record.state = transition_state
         now = _utcnow()
         if new_run:
             drafts = [BrokerSagaHistoryDraft(RUN_STARTED), *drafts]
@@ -426,6 +432,10 @@ class BrokerSagaRuntime:
         return "saga-" + _id(
             "transaction",
             self.config.service_name,
+            self.config.saga_type,
+            input.group,
+            input.saga_id,
+            input.run_id,
             input.topic,
             str(input.partition),
             str(input.offset),
@@ -494,3 +504,8 @@ def _state_from_dict(value: dict[str, Any]) -> SagaState:
             "compensation": compensation,
         }
     )
+
+
+def _clone_state(state: SagaState) -> SagaState:
+    """Return a deep copy for one handler transition."""
+    return deepcopy(state)
