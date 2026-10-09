@@ -113,6 +113,8 @@ config = ProducerConfig(
 
 For a new `(producer_id, epoch)` session, sequence numbers start at 1 and advance independently per partition. If the broker returns `stale_producer_epoch`, `idempotency_gap`, `idempotency gap`, `idempotency error`, or a first-message sequence error, the SDK treats the producer session as terminal rather than retrying it as a normal transient publish failure.
 
+If a publish was submitted but its acknowledgement cannot be read or parsed, `flush()` raises `ProducerOutcomeUnknownError`. A non-idempotent caller must reconcile application state before publishing the logical record again. Only an idempotent producer may retry the same producer ID, epoch, and sequence range automatically.
+
 ## Retry
 
 Failed batches are retried up to `max_retries` (default: 3) with exponential backoff starting at 100ms, capped at `max_backoff_ms` (default: 10000ms). If all retries fail, the batch is re-queued to the partition buffer.

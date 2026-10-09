@@ -5,7 +5,13 @@ from typing_extensions import Self
 
 from cursus.config import ProducerConfig
 from cursus.connection.sync_conn import SyncConnection
-from cursus.errors import BrokerError, ConnectionError, ProducerClosedError, ProducerFencedError
+from cursus.errors import (
+    BrokerError,
+    ConnectionError,
+    ProducerClosedError,
+    ProducerFencedError,
+    ProducerOutcomeUnknownError,
+)
 from cursus.metrics import ClientMetrics
 from cursus.protocol.command import CommandBuilder
 from cursus.protocol.decoder import decode_ack, is_terminal_producer_error
@@ -185,6 +191,7 @@ class Producer:
                 continue
 
             sent = False
+            last_failure: Exception | None = None
             backoff_ms = 100
             for attempt in range(self._config.max_retries + 1):
                 if self._done.is_set():
@@ -205,7 +212,10 @@ class Producer:
                             auth_token=self._config.auth_token,
                         )
                         conn.connect()
-                    except Exception:
+                    except Exception as exc:
+                        last_failure = ConnectionError(
+                            f"failed to connect producer partition {part}: {exc}"
+                        )
                         conn = None
                         if attempt < self._config.max_retries:
                             time.sleep(backoff_ms / 1000.0)
@@ -217,12 +227,14 @@ class Producer:
                     sent = True
                     break
                 except ProducerFencedError as exc:
+                    last_failure = exc
                     self.metrics.increment("cursus.producer.messages.failed", len(batch))
                     self._record_background_error(exc)
                     self._done.set()
                     sent = True
                     break
                 except BrokerError as exc:
+                    last_failure = exc
                     if conn is not None:
                         conn.close()
                         conn = None
@@ -237,6 +249,7 @@ class Producer:
                         time.sleep(backoff_ms / 1000.0)
                         backoff_ms = min(backoff_ms * 2, self._config.max_backoff_ms)
                 except Exception as exc:
+                    last_failure = exc
                     if conn is not None:
                         conn.close()
                         conn = None
@@ -255,7 +268,8 @@ class Producer:
             if not sent and batch:
                 self.metrics.increment("cursus.producer.messages.failed", len(batch))
                 self._record_background_error(
-                    ConnectionError(f"producer retries exhausted for partition {part}")
+                    last_failure
+                    or ConnectionError(f"producer retries exhausted for partition {part}")
                 )
 
         if conn is not None:
@@ -269,12 +283,21 @@ class Producer:
             self._config.idempotent,
             batch,
         )
-        conn.write_frame(data)
+        try:
+            conn.write_frame(data)
+        except Exception as exc:
+            raise ProducerOutcomeUnknownError(partition, "request write", exc) from exc
         if self._config.acks.value == "0":
             return
-        resp_data = conn.read_frame()
+        try:
+            resp_data = conn.read_frame()
+        except Exception as exc:
+            raise ProducerOutcomeUnknownError(partition, "acknowledgement read", exc) from exc
 
-        ack = decode_ack(resp_data)
+        try:
+            ack = decode_ack(resp_data)
+        except Exception as exc:
+            raise ProducerOutcomeUnknownError(partition, "acknowledgement parsing", exc) from exc
         if ack.status == "OK":
             with self._ack_lock:
                 self._unique_ack_count += len(batch)

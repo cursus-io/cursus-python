@@ -180,6 +180,8 @@ def test_commit_failure_classifiers():
     assert is_coordinator_failure("ERROR: member_not_found member=m1")
     assert is_coordinator_failure("ERROR: group_not_found group=g1")
     assert is_coordinator_failure("ERROR: NOT_COORDINATOR host=127.0.0.1 port=9001")
+    assert is_coordinator_failure('ERROR: coordinator_not_available reason="registration pending"')
+    assert is_coordinator_failure("ERROR: offset_manager_not_available")
     assert is_stale_producer_epoch("ERROR: stale_producer_epoch producer=p1")
     assert is_terminal_producer_error("ERROR: idempotency_gap expected=3 actual=5")
     assert is_terminal_producer_error(

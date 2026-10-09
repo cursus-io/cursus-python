@@ -6,7 +6,13 @@ from typing_extensions import Self
 
 from cursus.config import ProducerConfig
 from cursus.connection.async_conn import AsyncConnection
-from cursus.errors import BrokerError, ConnectionError, ProducerClosedError, ProducerFencedError
+from cursus.errors import (
+    BrokerError,
+    ConnectionError,
+    ProducerClosedError,
+    ProducerFencedError,
+    ProducerOutcomeUnknownError,
+)
 from cursus.protocol.command import CommandBuilder
 from cursus.protocol.decoder import decode_ack, is_terminal_producer_error
 from cursus.protocol.encoder import encode_batch, encode_message
@@ -179,11 +185,10 @@ class AsyncProducer:
                     self._config.idempotent,
                     batch,
                 )
-                await conn.write_frame(data)
-                if self._config.acks.value == "0":
+                resp_data = await self._exchange_batch(conn, part, data)
+                if resp_data is None:
                     self._in_flight[part] -= 1
                     continue
-                resp_data = await conn.read_frame()
                 resp_text = resp_data.decode("utf-8", errors="replace")
                 if "NOT_LEADER LEADER_IS" in resp_text:
                     parts = resp_text.split()
@@ -197,7 +202,10 @@ class AsyncProducer:
                         self._buffers[part] = batch + self._buffers[part]
                     self._in_flight[part] -= 1
                     continue
-                ack = decode_ack(resp_data)
+                try:
+                    ack = decode_ack(resp_data)
+                except Exception as exc:
+                    raise ProducerOutcomeUnknownError(part, "acknowledgement parsing", exc) from exc
                 if ack.status == "OK":
                     self._unique_ack_count += len(batch)
                     self._in_flight[part] -= 1
@@ -250,6 +258,20 @@ class AsyncProducer:
 
         if conn is not None:
             await conn.close()
+
+    async def _exchange_batch(
+        self, conn: AsyncConnection, partition: int, data: bytes
+    ) -> bytes | None:
+        try:
+            await conn.write_frame(data)
+        except Exception as exc:
+            raise ProducerOutcomeUnknownError(partition, "request write", exc) from exc
+        if self._config.acks.value == "0":
+            return None
+        try:
+            return await conn.read_frame()
+        except Exception as exc:
+            raise ProducerOutcomeUnknownError(partition, "acknowledgement read", exc) from exc
 
     @property
     def unique_ack_count(self) -> int:

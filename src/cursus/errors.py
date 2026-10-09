@@ -6,6 +6,18 @@ class ConnectionError(CursusError):
     pass
 
 
+class ProducerOutcomeUnknownError(ConnectionError):
+    """A publish may have reached the broker but has no trustworthy acknowledgement."""
+
+    def __init__(self, partition: int, stage: str, cause: Exception) -> None:
+        super().__init__(
+            f"producer outcome is unknown for partition {partition} during {stage}: {cause}"
+        )
+        self.partition = partition
+        self.stage = stage
+        self.cause = cause
+
+
 class ProtocolError(CursusError):
     pass
 
