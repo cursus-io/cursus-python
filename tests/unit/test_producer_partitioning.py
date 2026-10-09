@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from cursus.errors import BrokerError
+from cursus.errors import BrokerError, ProducerOutcomeUnknownError
 from cursus.producer import Producer, _PartitionBuffer
 from cursus.types import Message
 
@@ -84,6 +84,19 @@ class _FakeConn:
         return self.response
 
 
+class _FailingReadConn(_FakeConn):
+    def read_frame(self) -> bytes:
+        raise TimeoutError("ack timeout")
+
+
+class _AsyncFailingReadConn:
+    async def write_frame(self, _data: bytes) -> None:
+        return None
+
+    async def read_frame(self) -> bytes:
+        raise TimeoutError("ack timeout")
+
+
 def _new_sync_producer_for_send(epoch: int) -> Producer:
     from cursus.config import ProducerConfig
 
@@ -127,6 +140,26 @@ def test_sync_producer_non_terminal_ack_error_is_retryable_failure():
         )
 
 
+def test_sync_non_idempotent_timeout_surfaces_unknown_outcome():
+    from cursus.config import ProducerConfig
+
+    producer = Producer.__new__(Producer)
+    producer._config = ProducerConfig(topic="t", partitions=1)
+    producer._ack_lock = threading.Lock()
+    producer._unique_ack_count = 0
+
+    with pytest.raises(ProducerOutcomeUnknownError) as raised:
+        producer._send_batch(
+            _FailingReadConn(b""),
+            0,
+            [Message(offset=0, seq_num=1, payload="a", producer_id="py-test", epoch=1)],
+        )
+
+    assert raised.value.partition == 0
+    assert raised.value.stage == "acknowledgement read"
+    assert isinstance(raised.value.cause, TimeoutError)
+
+
 def test_replication_error_retry_requires_idempotence():
     error = BrokerError(
         "replication_unavailable",
@@ -160,6 +193,24 @@ def test_async_producer_uses_fixed_epoch_for_session_messages():
 
         assert [msg.epoch for msg in producer._buffers[0]] == [5678, 5678]
         assert [msg.seq_num for msg in producer._buffers[0]] == [1, 2]
+
+    asyncio.run(scenario())
+
+
+def test_async_non_idempotent_timeout_surfaces_unknown_outcome():
+    from cursus.async_producer import AsyncProducer
+    from cursus.config import ProducerConfig
+
+    async def scenario() -> None:
+        producer = AsyncProducer.__new__(AsyncProducer)
+        producer._config = ProducerConfig(topic="t", partitions=1)
+
+        with pytest.raises(ProducerOutcomeUnknownError) as raised:
+            await producer._exchange_batch(_AsyncFailingReadConn(), 0, b"batch")  # type: ignore[arg-type]
+
+        assert raised.value.partition == 0
+        assert raised.value.stage == "acknowledgement read"
+        assert isinstance(raised.value.cause, TimeoutError)
 
     asyncio.run(scenario())
 

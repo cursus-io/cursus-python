@@ -359,6 +359,8 @@ def is_coordinator_failure(response: str) -> bool:
         "member_not_found",
         "group_not_found",
         "NOT_COORDINATOR",
+        "coordinator_not_available",
+        "offset_manager_not_available",
     }
 
 
